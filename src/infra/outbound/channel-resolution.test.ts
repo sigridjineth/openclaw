@@ -133,6 +133,26 @@ describe("outbound channel resolution", () => {
     expect(loadOpenClawPluginsMock).toHaveBeenCalledTimes(1);
   });
 
+  it("bootstraps when the active registry has other channels but is missing the requested one", async () => {
+    const plugin = { id: "discord" };
+    getActivePluginRegistryMock.mockReturnValue({
+      channels: [{ plugin: { id: "slack" } }],
+    });
+    getChannelPluginMock.mockReturnValueOnce(undefined).mockReturnValueOnce(plugin);
+    const channelResolution = await importChannelResolution("bootstrap-missing-channel");
+
+    expect(
+      channelResolution.resolveOutboundChannelPlugin({
+        channel: "discord",
+        cfg: { channels: {} } as never,
+      }),
+    ).toBe(plugin);
+    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith({
+      config: { autoEnabled: true },
+      workspaceDir: "/tmp/workspace",
+    });
+  });
+
   it("retries bootstrap after a transient load failure", async () => {
     getChannelPluginMock.mockReturnValue(undefined);
     loadOpenClawPluginsMock.mockImplementationOnce(() => {

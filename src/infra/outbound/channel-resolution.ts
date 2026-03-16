@@ -32,11 +32,10 @@ function maybeBootstrapChannelPlugin(params: {
     return;
   }
 
-  const activeRegistry = getActivePluginRegistry();
-  if ((activeRegistry?.channels?.length ?? 0) > 0) {
-    return;
-  }
-
+  // Some runtimes keep a partially populated active registry (for example after
+  // loading only workspace-local plugins). If the requested channel is missing,
+  // try one full bootstrap instead of assuming "non-empty registry" means the
+  // channel is available.
   const registryKey = getActivePluginRegistryKey() ?? "<none>";
   const attemptKey = `${registryKey}:${params.channel}`;
   if (bootstrapAttempts.has(attemptKey)) {
