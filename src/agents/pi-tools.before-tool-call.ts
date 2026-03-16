@@ -2,6 +2,7 @@ import type { ToolLoopDetectionConfig } from "../config/types.tools.js";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { deriveSessionChatType } from "../sessions/session-key-utils.js";
 import { isPlainObject } from "../utils.js";
 import { normalizeToolName } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -23,6 +24,12 @@ const adjustedParamsByToolCallId = new Map<string, unknown>();
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 const LOOP_WARNING_BUCKET_SIZE = 10;
 const MAX_LOOP_WARNING_KEYS = 256;
+const SHELL_SEGMENT_SPLIT_RE = /&&|\|\||;|\||\n/;
+const LEADING_EXEC_PREFIX_PATTERNS = [
+  /^(?:sudo|command|builtin|exec|nohup)\s+/,
+  /^timeout\s+\S+\s+/,
+  /^env\s+(?:[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/i,
+] as const;
 let beforeToolCallRuntimePromise: Promise<
   typeof import("./pi-tools.before-tool-call.runtime.js")
 > | null = null;
@@ -56,6 +63,78 @@ function shouldEmitLoopWarning(state: SessionState, warningKey: string, count: n
     }
   }
   return true;
+}
+
+function extractExecCommand(params: unknown): string | undefined {
+  if (!isPlainObject(params)) {
+    return undefined;
+  }
+  const command =
+    typeof params.command === "string"
+      ? params.command
+      : typeof params.cmd === "string"
+        ? params.cmd
+        : undefined;
+  const trimmed = command?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeShellSegment(segment: string): string {
+  let normalized = segment.trim().toLowerCase();
+  let changed = true;
+  while (changed && normalized) {
+    changed = false;
+    for (const pattern of LEADING_EXEC_PREFIX_PATTERNS) {
+      const next = normalized.replace(pattern, "");
+      if (next !== normalized) {
+        normalized = next.trimStart();
+        changed = true;
+      }
+    }
+  }
+  return normalized;
+}
+
+function isGatewayLifecycleSegment(segment: string): boolean {
+  const normalized = normalizeShellSegment(segment);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /^(?:pnpm\s+openclaw|npx\s+openclaw|openclaw)\s+gateway\s+(?:restart|run|start|stop)\b/.test(
+      normalized,
+    ) ||
+    /^node\s+\S+\s+gateway\s+(?:restart|run|start|stop)\b/.test(normalized) ||
+    /^(?:pkill|killall)\b[\s\S]*\bopenclaw-gateway\b/.test(normalized)
+  );
+}
+
+function resolveGatewayLifecycleExecBlockReason(args: {
+  toolName: string;
+  params: unknown;
+  ctx?: HookContext;
+}): string | undefined {
+  if (normalizeToolName(args.toolName || "tool") !== "exec") {
+    return undefined;
+  }
+  const sessionKey = args.ctx?.sessionKey?.trim();
+  if (!sessionKey || deriveSessionChatType(sessionKey) === "unknown") {
+    return undefined;
+  }
+  const command = extractExecCommand(args.params);
+  if (!command) {
+    return undefined;
+  }
+  const blocksGatewayLifecycle = command
+    .split(SHELL_SEGMENT_SPLIT_RE)
+    .some((segment) => isGatewayLifecycleSegment(segment));
+  if (!blocksGatewayLifecycle) {
+    return undefined;
+  }
+  return (
+    "Do not manage the OpenClaw gateway from a live chat session via exec. " +
+    "It can interrupt the current reply mid-turn. Use a control shell or a non-chat session instead."
+  );
 }
 
 async function recordLoopOutcome(args: {
@@ -96,6 +175,17 @@ export async function runBeforeToolCallHook(args: {
 }): Promise<HookOutcome> {
   const toolName = normalizeToolName(args.toolName || "tool");
   const params = args.params;
+  const gatewayLifecycleBlockReason = resolveGatewayLifecycleExecBlockReason({
+    toolName,
+    params,
+    ctx: args.ctx,
+  });
+  if (gatewayLifecycleBlockReason) {
+    return {
+      blocked: true,
+      reason: gatewayLifecycleBlockReason,
+    };
+  }
 
   if (args.ctx?.sessionKey) {
     const { getDiagnosticSessionState, logToolLoopAction, detectToolCallLoop, recordToolCall } =
