@@ -123,4 +123,22 @@ describe("startGatewayMaintenanceTimers", () => {
 
     stopMaintenanceTimers(timers);
   });
+
+  it("refreshes external model credentials on startup and every health interval", async () => {
+    vi.useFakeTimers();
+    const refreshExternalModelCredentials = vi.fn(async () => {});
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+
+    const timers = startGatewayMaintenanceTimers({
+      ...createMaintenanceTimerDeps(),
+      refreshExternalModelCredentials,
+    });
+
+    expect(refreshExternalModelCredentials).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(refreshExternalModelCredentials).toHaveBeenCalledTimes(2);
+
+    stopMaintenanceTimers(timers);
+  });
 });

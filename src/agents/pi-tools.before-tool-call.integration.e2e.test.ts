@@ -143,6 +143,77 @@ describe("before_tool_call hook integration", () => {
     );
   });
 
+  it("blocks long-running exec commands from live chat sessions", async () => {
+    hookRunner.hasHooks.mockReturnValue(false);
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "exec", execute } as any, {
+      agentId: "magiclabs",
+      sessionKey: "agent:magiclabs:discord:channel:1471605563136806992",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await expect(
+      tool.execute(
+        "call-chat-long-exec",
+        { command: "sleep 300 && tmux capture-pane -t ralph-r5 -p | tail -30", timeout: 320 },
+        undefined,
+        extensionContext,
+      ),
+    ).rejects.toThrow("Do not run long-lived terminal automation from a live chat session");
+    expect(execute).not.toHaveBeenCalled();
+    expect(hookRunner.runBeforeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("blocks process polling from live chat sessions", async () => {
+    hookRunner.hasHooks.mockReturnValue(false);
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "process", execute } as any, {
+      agentId: "magiclabs",
+      sessionKey: "agent:magiclabs:discord:channel:1471605563136806992",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await expect(
+      tool.execute(
+        "call-chat-process-poll",
+        { action: "poll", sessionId: "clear-breeze", timeout: 300000 },
+        undefined,
+        extensionContext,
+      ),
+    ).rejects.toThrow(
+      "Do not poll or stream long-running background work from a live chat session",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(hookRunner.runBeforeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("allows process cleanup from live chat sessions", async () => {
+    hookRunner.hasHooks.mockReturnValue(false);
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tool = wrapToolWithBeforeToolCallHook({ name: "process", execute } as any, {
+      agentId: "magiclabs",
+      sessionKey: "agent:magiclabs:discord:channel:1471605563136806992",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await tool.execute(
+      "call-chat-process-kill",
+      { action: "kill", sessionId: "clear-breeze" },
+      undefined,
+      extensionContext,
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      "call-chat-process-kill",
+      { action: "kill", sessionId: "clear-breeze" },
+      undefined,
+      extensionContext,
+    );
+  });
+
   it("allows gateway lifecycle exec commands from non-chat sessions", async () => {
     hookRunner.hasHooks.mockReturnValue(false);
     const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });

@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
+import type { AuthProfileCredential } from "../agents/auth-profiles.js";
 import { upsertAuthProfile } from "../agents/auth-profiles.js";
+import type { ClaudeCliCredential } from "../agents/cli-credentials.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   coerceSecretRef,
@@ -10,6 +12,7 @@ import {
   type SecretInput,
   type SecretRef,
 } from "../config/types.secrets.js";
+import { loadJsonFile } from "../infra/json-file.js";
 import { KILOCODE_DEFAULT_MODEL_REF } from "../providers/kilocode-shared.js";
 import { PROVIDER_ENV_VARS } from "../secrets/provider-env-vars.js";
 import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
@@ -107,6 +110,10 @@ export type WriteOAuthCredentialsOptions = {
   syncSiblingAgents?: boolean;
 };
 
+type SyncAnthropicCredentialOptions = {
+  syncSiblingAgents?: boolean;
+};
+
 /** Resolve real path, returning null if the target doesn't exist. */
 function safeRealpathSync(dir: string): string | null {
   try {
@@ -153,6 +160,90 @@ function resolveSiblingAgentDirs(primaryAgentDir: string): string[] {
     }
   }
   return result;
+}
+
+function readStoredAuthProfile(
+  agentDir: string,
+  profileId: string,
+): AuthProfileCredential | undefined {
+  const raw = loadJsonFile(path.join(agentDir, "auth-profiles.json"));
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const profiles = (raw as { profiles?: Record<string, unknown> }).profiles;
+  if (!profiles || typeof profiles !== "object") {
+    return undefined;
+  }
+  const credential = profiles[profileId];
+  if (!credential || typeof credential !== "object") {
+    return undefined;
+  }
+  return credential as AuthProfileCredential;
+}
+
+function buildAnthropicCredentialFromClaudeCli(creds: ClaudeCliCredential): AuthProfileCredential {
+  if (creds.type === "oauth") {
+    return {
+      type: "oauth",
+      provider: "anthropic",
+      access: creds.access,
+      refresh: creds.refresh,
+      expires: creds.expires,
+    };
+  }
+  return {
+    type: "token",
+    provider: "anthropic",
+    token: creds.token,
+    expires: creds.expires,
+  };
+}
+
+function shouldSyncAnthropicDefaultProfile(
+  existing: AuthProfileCredential | undefined,
+  next: ClaudeCliCredential,
+): boolean {
+  // Only repair stale Claude-derived OAuth profiles. Never overwrite an explicit
+  // API key or setup-token that the operator configured on purpose.
+  if (!existing || existing.provider !== "anthropic" || existing.type !== "oauth") {
+    return false;
+  }
+  if (next.type === "oauth") {
+    return (
+      existing.access !== next.access ||
+      existing.refresh !== next.refresh ||
+      existing.expires !== next.expires
+    );
+  }
+  return existing.access !== next.token || existing.expires !== next.expires;
+}
+
+export async function syncAnthropicDefaultProfileFromClaudeCliCredential(
+  creds: ClaudeCliCredential,
+  agentDir?: string,
+  options?: SyncAnthropicCredentialOptions,
+): Promise<string[]> {
+  const resolvedAgentDir = path.resolve(resolveAuthAgentDir(agentDir));
+  const targetAgentDirs = options?.syncSiblingAgents
+    ? resolveSiblingAgentDirs(resolvedAgentDir)
+    : [resolvedAgentDir];
+  const nextCredential = buildAnthropicCredentialFromClaudeCli(creds);
+  const updatedAgentDirs: string[] = [];
+
+  for (const targetAgentDir of targetAgentDirs) {
+    const existing = readStoredAuthProfile(targetAgentDir, "anthropic:default");
+    if (!shouldSyncAnthropicDefaultProfile(existing, creds)) {
+      continue;
+    }
+    upsertAuthProfile({
+      profileId: "anthropic:default",
+      agentDir: targetAgentDir,
+      credential: nextCredential,
+    });
+    updatedAgentDirs.push(targetAgentDir);
+  }
+
+  return updatedAgentDirs;
 }
 
 export async function writeOAuthCredentials(

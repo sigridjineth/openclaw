@@ -25,6 +25,7 @@ export function startGatewayMaintenanceTimers(params: {
   getPresenceVersion: () => number;
   getHealthVersion: () => number;
   refreshGatewayHealthSnapshot: (opts?: { probe?: boolean }) => Promise<HealthSummary>;
+  refreshExternalModelCredentials?: () => Promise<void>;
   logHealth: { error: (msg: string) => void };
   dedupe: Map<string, DedupeEntry>;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
@@ -67,12 +68,22 @@ export function startGatewayMaintenanceTimers(params: {
     void params
       .refreshGatewayHealthSnapshot({ probe: true })
       .catch((err) => params.logHealth.error(`refresh failed: ${formatError(err)}`));
+    void params
+      .refreshExternalModelCredentials?.()
+      .catch((err) =>
+        params.logHealth.error(`external credential refresh failed: ${formatError(err)}`),
+      );
   }, HEALTH_REFRESH_INTERVAL_MS);
 
   // Prime cache so first client gets a snapshot without waiting.
   void params
     .refreshGatewayHealthSnapshot({ probe: true })
     .catch((err) => params.logHealth.error(`initial refresh failed: ${formatError(err)}`));
+  void params
+    .refreshExternalModelCredentials?.()
+    .catch((err) =>
+      params.logHealth.error(`initial external credential refresh failed: ${formatError(err)}`),
+    );
 
   // dedupe cache cleanup
   const dedupeCleanup = setInterval(() => {

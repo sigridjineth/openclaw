@@ -1,4 +1,7 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { syncAnthropicDefaultProfileFromClaudeCliCredential } from "./onboard-auth.credentials.js";
 import {
   setByteplusApiKey,
   setCloudflareAiGatewayConfig,
@@ -228,6 +231,141 @@ describe("onboard auth credentials secret refs", () => {
     });
     expect(parsed.profiles?.["opencode-go:default"]).toMatchObject({
       keyRef: { source: "env", provider: "default", id: "OPENCODE_API_KEY" },
+    });
+  });
+});
+
+describe("syncAnthropicDefaultProfileFromClaudeCliCredential", () => {
+  const lifecycle = createAuthTestLifecycle([
+    "OPENCLAW_STATE_DIR",
+    "OPENCLAW_AGENT_DIR",
+    "PI_CODING_AGENT_DIR",
+  ]);
+
+  afterEach(async () => {
+    await lifecycle.cleanup();
+  });
+
+  async function setupStandardAgentLayout(prefix: string) {
+    const stateDir = await fs.mkdtemp(path.join(process.cwd(), prefix));
+    lifecycle.setStateDir(stateDir);
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+
+    const mainAgentDir = path.join(stateDir, "agents", "main", "agent");
+    process.env.OPENCLAW_AGENT_DIR = mainAgentDir;
+    process.env.PI_CODING_AGENT_DIR = mainAgentDir;
+
+    const siblingAgentDirs = [
+      mainAgentDir,
+      path.join(stateDir, "agents", "dgxspark", "agent"),
+      path.join(stateDir, "agents", "magiclabs", "agent"),
+    ];
+    await Promise.all(siblingAgentDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
+    return { stateDir, mainAgentDir, siblingAgentDirs };
+  }
+
+  async function writeProfiles(agentDir: string, profiles: Record<string, unknown>) {
+    await fs.writeFile(
+      path.join(agentDir, "auth-profiles.json"),
+      `${JSON.stringify({ version: 1, profiles }, null, 2)}\n`,
+    );
+  }
+
+  it("updates sibling agents that still store Anthropic oauth profiles", async () => {
+    const env = await setupStandardAgentLayout("openclaw-anthropic-sync-");
+    for (const agentDir of env.siblingAgentDirs) {
+      await writeProfiles(agentDir, {
+        "anthropic:default": {
+          type: "oauth",
+          provider: "anthropic",
+          access: `${path.basename(path.dirname(agentDir))}-old-access`,
+          refresh: `${path.basename(path.dirname(agentDir))}-old-refresh`,
+          expires: 1_000,
+        },
+      });
+    }
+
+    const updated = await syncAnthropicDefaultProfileFromClaudeCliCredential(
+      {
+        type: "oauth",
+        provider: "anthropic",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: 99_999,
+      },
+      env.mainAgentDir,
+      { syncSiblingAgents: true },
+    );
+
+    expect(updated).toHaveLength(3);
+    for (const agentDir of env.siblingAgentDirs) {
+      const parsed = await readAuthProfilesForAgent<{
+        profiles?: Record<string, { access?: string; refresh?: string; expires?: number }>;
+      }>(agentDir);
+      expect(parsed.profiles?.["anthropic:default"]).toMatchObject({
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: 99_999,
+      });
+    }
+  });
+
+  it("does not overwrite explicit Anthropic token or api_key profiles", async () => {
+    const env = await setupStandardAgentLayout("openclaw-anthropic-sync-skip-");
+    const [mainAgentDir, dgxAgentDir, magiclabsAgentDir] = env.siblingAgentDirs;
+    await writeProfiles(mainAgentDir, {
+      "anthropic:default": {
+        type: "oauth",
+        provider: "anthropic",
+        access: "main-old-access",
+        refresh: "main-old-refresh",
+        expires: 1_000,
+      },
+    });
+    await writeProfiles(dgxAgentDir, {
+      "anthropic:default": {
+        type: "token",
+        provider: "anthropic",
+        token: "manual-setup-token",
+        expires: 1_234,
+      },
+    });
+    await writeProfiles(magiclabsAgentDir, {
+      "anthropic:default": {
+        type: "api_key",
+        provider: "anthropic",
+        key: "sk-ant-api-key",
+      },
+    });
+
+    const updated = await syncAnthropicDefaultProfileFromClaudeCliCredential(
+      {
+        type: "oauth",
+        provider: "anthropic",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: 99_999,
+      },
+      env.mainAgentDir,
+      { syncSiblingAgents: true },
+    );
+
+    expect(updated).toEqual([mainAgentDir]);
+
+    const dgxParsed = await readAuthProfilesForAgent<{
+      profiles?: Record<string, { type?: string; token?: string }>;
+    }>(dgxAgentDir);
+    expect(dgxParsed.profiles?.["anthropic:default"]).toMatchObject({
+      type: "token",
+      token: "manual-setup-token",
+    });
+
+    const magiclabsParsed = await readAuthProfilesForAgent<{
+      profiles?: Record<string, { type?: string; key?: string }>;
+    }>(magiclabsAgentDir);
+    expect(magiclabsParsed.profiles?.["anthropic:default"]).toMatchObject({
+      type: "api_key",
+      key: "sk-ant-api-key",
     });
   });
 });

@@ -25,6 +25,13 @@ const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 const LOOP_WARNING_BUCKET_SIZE = 10;
 const MAX_LOOP_WARNING_KEYS = 256;
 const SHELL_SEGMENT_SPLIT_RE = /&&|\|\||;|\||\n/;
+const LIVE_CHAT_MAX_EXEC_TIMEOUT_SECONDS = 60;
+const LIVE_CHAT_DELAY_SEGMENT_PATTERNS = [
+  /\bsleep\s+\d+(?:\.\d+)?\b/,
+  /\btail\s+-f\b/,
+  /\bwatch\b/,
+  /\bwhile\s+true\b/,
+] as const;
 const LEADING_EXEC_PREFIX_PATTERNS = [
   /^(?:sudo|command|builtin|exec|nohup)\s+/,
   /^timeout\s+\S+\s+/,
@@ -77,6 +84,31 @@ function extractExecCommand(params: unknown): string | undefined {
         : undefined;
   const trimmed = command?.trim();
   return trimmed || undefined;
+}
+
+function extractToolTimeoutSeconds(params: unknown): number | undefined {
+  if (!isPlainObject(params)) {
+    return undefined;
+  }
+  const timeout =
+    typeof params.timeout === "number"
+      ? params.timeout
+      : typeof params.timeout === "string"
+        ? Number(params.timeout)
+        : undefined;
+  if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) {
+    return timeout;
+  }
+  const timeoutMs =
+    typeof params.timeoutMs === "number"
+      ? params.timeoutMs
+      : typeof params.timeoutMs === "string"
+        ? Number(params.timeoutMs)
+        : undefined;
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return timeoutMs / 1000;
+  }
+  return undefined;
 }
 
 function normalizeShellSegment(segment: string): string {
@@ -137,6 +169,56 @@ function resolveGatewayLifecycleExecBlockReason(args: {
   );
 }
 
+function resolveLiveChatAutomationBlockReason(args: {
+  toolName: string;
+  params: unknown;
+  ctx?: HookContext;
+}): string | undefined {
+  const sessionKey = args.ctx?.sessionKey?.trim();
+  if (!sessionKey || deriveSessionChatType(sessionKey) === "unknown") {
+    return undefined;
+  }
+  const toolName = normalizeToolName(args.toolName || "tool");
+  if (toolName === "process" && isPlainObject(args.params)) {
+    const action = typeof args.params.action === "string" ? args.params.action.trim() : "";
+    if (action === "poll" || action === "log" || action === "write") {
+      return (
+        "Do not poll or stream long-running background work from a live chat session. " +
+        "It can stall the reply path. Use a control shell or a non-chat session instead."
+      );
+    }
+    return undefined;
+  }
+  if (toolName !== "exec") {
+    return undefined;
+  }
+  const command = extractExecCommand(args.params);
+  if (!command) {
+    return undefined;
+  }
+  const timeoutSeconds = extractToolTimeoutSeconds(args.params);
+  if (typeof timeoutSeconds === "number" && timeoutSeconds > LIVE_CHAT_MAX_EXEC_TIMEOUT_SECONDS) {
+    return (
+      "Do not run long-lived terminal automation from a live chat session via exec. " +
+      "It can stall the reply path. Use a control shell or a non-chat session instead."
+    );
+  }
+  const hasDelayPattern = command
+    .split(SHELL_SEGMENT_SPLIT_RE)
+    .some((segment) =>
+      LIVE_CHAT_DELAY_SEGMENT_PATTERNS.some((pattern) =>
+        pattern.test(normalizeShellSegment(segment)),
+      ),
+    );
+  if (hasDelayPattern) {
+    return (
+      "Do not run delayed or watch-style terminal automation from a live chat session via exec. " +
+      "It can stall the reply path. Use a control shell or a non-chat session instead."
+    );
+  }
+  return undefined;
+}
+
 async function recordLoopOutcome(args: {
   ctx?: HookContext;
   toolName: string;
@@ -184,6 +266,17 @@ export async function runBeforeToolCallHook(args: {
     return {
       blocked: true,
       reason: gatewayLifecycleBlockReason,
+    };
+  }
+  const liveChatAutomationBlockReason = resolveLiveChatAutomationBlockReason({
+    toolName,
+    params,
+    ctx: args.ctx,
+  });
+  if (liveChatAutomationBlockReason) {
+    return {
+      blocked: true,
+      reason: liveChatAutomationBlockReason,
     };
   }
 
