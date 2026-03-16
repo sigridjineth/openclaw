@@ -318,6 +318,8 @@ describe("provider-runtime", () => {
 
     expect(resolvePluginProvidersMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        activate: false,
+        cache: false,
         onlyPluginIds: ["openai"],
       }),
     );

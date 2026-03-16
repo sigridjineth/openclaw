@@ -33,6 +33,8 @@ function resolveProviderPluginsForHooks(params: {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   onlyPluginIds?: string[];
+  activate?: boolean;
+  cache?: boolean;
 }): ProviderPlugin[] {
   return resolvePluginProviders({
     ...params,
@@ -51,6 +53,9 @@ function resolveGlobalProviderHookPlugins(params: {
   return resolveProviderPluginsForHooks({
     ...params,
     onlyPluginIds: [...GLOBAL_PROVIDER_HOOK_PLUGIN_IDS],
+    // Keep provider-scoped hook lookups from replacing the active runtime registry.
+    activate: false,
+    cache: false,
   });
 }
 
