@@ -20,6 +20,27 @@ async function writeAuthStore(agentDir: string) {
   await fs.writeFile(authPath, JSON.stringify(payload), "utf-8");
 }
 
+async function writeAnthropicAuthStore(agentDir: string) {
+  const authPath = path.join(agentDir, "auth-profiles.json");
+  const payload = {
+    version: 1,
+    profiles: {
+      "anthropic:manual": { type: "token", provider: "anthropic", token: "sk-manual" },
+      "anthropic:default": {
+        type: "oauth",
+        provider: "anthropic",
+        access: "oauth-access",
+        refresh: "oauth-refresh",
+        expires: Date.now() + 60 * 60 * 1000,
+      },
+    },
+    lastGood: {
+      anthropic: "anthropic:default",
+    },
+  };
+  await fs.writeFile(authPath, JSON.stringify(payload), "utf-8");
+}
+
 describe("resolveSessionAuthProfileOverride", () => {
   it("keeps user override when provider alias differs", async () => {
     await withStateDirEnv("openclaw-auth-", async ({ stateDir }) => {
@@ -48,6 +69,37 @@ describe("resolveSessionAuthProfileOverride", () => {
 
       expect(resolved).toBe("zai:work");
       expect(sessionEntry.authProfileOverride).toBe("zai:work");
+    });
+  });
+
+  it("prefers last known good anthropic oauth for new auto sessions", async () => {
+    await withStateDirEnv("openclaw-auth-", async ({ stateDir }) => {
+      const agentDir = path.join(stateDir, "agent");
+      await fs.mkdir(agentDir, { recursive: true });
+      await writeAnthropicAuthStore(agentDir);
+
+      const sessionEntry: SessionEntry = {
+        sessionId: "s2",
+        updatedAt: Date.now(),
+        authProfileOverride: "anthropic:manual",
+        authProfileOverrideSource: "auto",
+      };
+      const sessionStore = { "agent:main:anthropic": sessionEntry };
+
+      const resolved = await resolveSessionAuthProfileOverride({
+        cfg: {} as OpenClawConfig,
+        provider: "anthropic",
+        agentDir,
+        sessionEntry,
+        sessionStore,
+        sessionKey: "agent:main:anthropic",
+        storePath: undefined,
+        isNewSession: true,
+      });
+
+      expect(resolved).toBe("anthropic:default");
+      expect(sessionEntry.authProfileOverride).toBe("anthropic:default");
+      expect(sessionEntry.authProfileOverrideSource).toBe("auto");
     });
   });
 });

@@ -11,10 +11,11 @@ import {
 } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
-const { getOAuthApiKeyMock } = vi.hoisted(() => ({
+const { getOAuthApiKeyMock, writeClaudeCliCredentialsMock } = vi.hoisted(() => ({
   getOAuthApiKeyMock: vi.fn(async (): Promise<unknown> => {
     throw new Error("Failed to extract accountId from token");
   }),
+  writeClaudeCliCredentialsMock: vi.fn(() => true),
 }));
 
 vi.mock("@mariozechner/pi-ai/oauth", () => ({
@@ -24,6 +25,14 @@ vi.mock("@mariozechner/pi-ai/oauth", () => ({
     { id: "anthropic", envApiKey: "ANTHROPIC_API_KEY", oauthTokenEnv: "ANTHROPIC_OAUTH_TOKEN" }, // pragma: allowlist secret
   ],
 }));
+
+vi.mock("../cli-credentials.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../cli-credentials.js")>();
+  return {
+    ...actual,
+    writeClaudeCliCredentials: writeClaudeCliCredentialsMock,
+  };
+});
 
 function createExpiredOauthStore(params: {
   profileId: string;
@@ -56,6 +65,7 @@ describe("resolveApiKeyForProfile openai-codex refresh fallback", () => {
 
   beforeEach(async () => {
     getOAuthApiKeyMock.mockClear();
+    writeClaudeCliCredentialsMock.mockClear();
     clearRuntimeAuthProfileStoreSnapshots();
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-refresh-fallback-"));
     agentDir = path.join(tempRoot, "agents", "main", "agent");
@@ -114,6 +124,13 @@ describe("resolveApiKeyForProfile openai-codex refresh fallback", () => {
       access: "fresh-access-token",
       refresh: "refresh-token-2",
     });
+    expect(writeClaudeCliCredentialsMock).toHaveBeenCalledTimes(1);
+    expect(writeClaudeCliCredentialsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        access: "fresh-access-token",
+        refresh: "refresh-token-2",
+      }),
+    );
   });
   it("falls back to cached access token when openai-codex refresh fails on accountId extraction", async () => {
     const profileId = "openai-codex:default";

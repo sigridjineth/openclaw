@@ -442,11 +442,16 @@ export function writeClaudeCliCredentials(
   if (platform === "darwin") {
     const didWriteKeychain = writeKeychain(newCredentials);
     if (didWriteKeychain) {
+      claudeCliCache = null;
       return true;
     }
   }
 
-  return writeFile(newCredentials, { homeDir: options?.homeDir });
+  const didWriteFile = writeFile(newCredentials, { homeDir: options?.homeDir });
+  if (didWriteFile) {
+    claudeCliCache = null;
+  }
+  return didWriteFile;
 }
 
 export function readCodexCliCredentials(options?: {

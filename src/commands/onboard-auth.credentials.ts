@@ -208,6 +208,11 @@ function shouldSyncAnthropicDefaultProfile(
   if (!existing || existing.provider !== "anthropic" || existing.type !== "oauth") {
     return false;
   }
+  const existingExpires = Number.isFinite(existing.expires) ? existing.expires : 0;
+  const nextExpires = Number.isFinite(next.expires) ? next.expires : 0;
+  if (nextExpires < existingExpires) {
+    return false;
+  }
   if (next.type === "oauth") {
     return (
       existing.access !== next.access ||

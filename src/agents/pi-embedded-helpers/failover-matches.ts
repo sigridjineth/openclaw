@@ -64,6 +64,7 @@ const ERROR_PATTERNS = {
   ],
   authPermanent: [
     /api[_ ]?key[_ ]?(?:revoked|invalid|deactivated|deleted)/i,
+    /invalid\s+x-api-key/i,
     "invalid_api_key",
     "key has been disabled",
     "key has been revoked",

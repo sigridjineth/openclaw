@@ -976,6 +976,17 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
     expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
   });
 
+  it("disables invalid x-api-key profiles and rotates to the next auto profile", async () => {
+    const { usageStats } = await runAutoPinnedRotationCase({
+      errorMessage: "HTTP 401: authentication_error: invalid x-api-key",
+      sessionKey: "agent:test:invalid-x-api-key",
+      runId: "run:invalid-x-api-key",
+    });
+    expect(typeof usageStats["openai:p2"]?.lastUsed).toBe("number");
+    expect(typeof usageStats["openai:p1"]?.disabledUntil).toBe("number");
+    expect(usageStats["openai:p1"]?.disabledReason).toBe("auth_permanent");
+  });
+
   it("does not rotate for compaction timeouts", async () => {
     await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
       await writeAuthStore(agentDir);

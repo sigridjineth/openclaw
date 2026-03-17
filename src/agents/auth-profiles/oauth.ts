@@ -10,6 +10,7 @@ import { withFileLock } from "../../infra/file-lock.js";
 import { refreshQwenPortalCredentials } from "../../providers/qwen-portal-oauth.js";
 import { resolveSecretRefString, type SecretRefResolveCache } from "../../secrets/resolve.js";
 import { refreshChutesTokens } from "../chutes-oauth.js";
+import { writeClaudeCliCredentials } from "../cli-credentials.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { AUTH_STORE_LOCK_OPTIONS, log } from "./constants.js";
 import { resolveTokenExpiryState } from "./credential-state.js";
@@ -91,6 +92,23 @@ function buildOAuthProfileResult(params: {
 
 function extractErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function syncAnthropicOauthToClaudeCli(credentials: OAuthCredentials): void {
+  if (
+    typeof credentials.access !== "string" ||
+    credentials.access.trim().length === 0 ||
+    typeof credentials.refresh !== "string" ||
+    credentials.refresh.trim().length === 0 ||
+    !Number.isFinite(credentials.expires)
+  ) {
+    return;
+  }
+
+  // Gateway startup imports Anthropic OAuth from Claude CLI into each agent store.
+  // Keep that source in sync after a successful refresh so a restart cannot clobber
+  // fresher agent credentials with stale CLI credentials.
+  writeClaudeCliCredentials(credentials);
 }
 
 function shouldUseOpenaiCodexRefreshFallback(params: {
@@ -234,6 +252,9 @@ async function refreshOAuthTokenWithLock(params: {
       type: "oauth",
     };
     saveAuthProfileStore(store, params.agentDir);
+    if (normalizeProviderId(cred.provider) === "anthropic") {
+      syncAnthropicOauthToClaudeCli(result.newCredentials);
+    }
 
     return result;
   });

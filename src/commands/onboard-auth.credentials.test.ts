@@ -368,4 +368,40 @@ describe("syncAnthropicDefaultProfileFromClaudeCliCredential", () => {
       key: "sk-ant-api-key",
     });
   });
+
+  it("does not overwrite fresher Anthropic oauth profiles with older Claude CLI credentials", async () => {
+    const env = await setupStandardAgentLayout("openclaw-anthropic-sync-freshness-");
+    const [mainAgentDir] = env.siblingAgentDirs;
+    await writeProfiles(mainAgentDir, {
+      "anthropic:default": {
+        type: "oauth",
+        provider: "anthropic",
+        access: "fresh-access",
+        refresh: "fresh-refresh",
+        expires: 200_000,
+      },
+    });
+
+    const updated = await syncAnthropicDefaultProfileFromClaudeCliCredential(
+      {
+        type: "oauth",
+        provider: "anthropic",
+        access: "stale-access",
+        refresh: "stale-refresh",
+        expires: 100_000,
+      },
+      mainAgentDir,
+      { syncSiblingAgents: false },
+    );
+
+    expect(updated).toEqual([]);
+    const parsed = await readAuthProfilesForAgent<{
+      profiles?: Record<string, { access?: string; refresh?: string; expires?: number }>;
+    }>(mainAgentDir);
+    expect(parsed.profiles?.["anthropic:default"]).toMatchObject({
+      access: "fresh-access",
+      refresh: "fresh-refresh",
+      expires: 200_000,
+    });
+  });
 });

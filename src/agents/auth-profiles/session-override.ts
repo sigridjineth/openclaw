@@ -19,6 +19,25 @@ function isProfileForProvider(params: {
   return normalizeProviderId(entry.provider) === normalizeProviderId(params.provider);
 }
 
+function resolveAnthropicAutoSessionProfile(params: {
+  provider: string;
+  order: string[];
+  store: ReturnType<typeof ensureAuthProfileStore>;
+}): string | undefined {
+  if (normalizeProviderId(params.provider) !== "anthropic") {
+    return undefined;
+  }
+  const lastGood = params.store.lastGood?.anthropic ?? params.store.lastGood?.[params.provider];
+  if (!lastGood || !params.order.includes(lastGood)) {
+    return undefined;
+  }
+  const profile = params.store.profiles[lastGood];
+  if (profile?.type !== "oauth" || isProfileInCooldown(params.store, lastGood)) {
+    return undefined;
+  }
+  return lastGood;
+}
+
 export async function clearSessionAuthProfileOverride(params: {
   sessionEntry: SessionEntry;
   sessionStore: Record<string, SessionEntry>;
@@ -85,22 +104,6 @@ export async function resolveSessionAuthProfileOverride(params: {
     return undefined;
   }
 
-  const pickFirstAvailable = () =>
-    order.find((profileId) => !isProfileInCooldown(store, profileId)) ?? order[0];
-  const pickNextAvailable = (active: string) => {
-    const startIndex = order.indexOf(active);
-    if (startIndex < 0) {
-      return pickFirstAvailable();
-    }
-    for (let offset = 1; offset <= order.length; offset += 1) {
-      const candidate = order[(startIndex + offset) % order.length];
-      if (!isProfileInCooldown(store, candidate)) {
-        return candidate;
-      }
-    }
-    return order[startIndex] ?? order[0];
-  };
-
   const compactionCount = sessionEntry.compactionCount ?? 0;
   const storedCompaction =
     typeof sessionEntry.authProfileOverrideCompactionCount === "number"
@@ -114,6 +117,32 @@ export async function resolveSessionAuthProfileOverride(params: {
       : current
         ? "user"
         : undefined);
+
+  const preferredAnthropicAutoProfile =
+    source !== "user" && isNewSession
+      ? resolveAnthropicAutoSessionProfile({ provider, order, store })
+      : undefined;
+  const pickFirstAvailable = () =>
+    preferredAnthropicAutoProfile ??
+    order.find((profileId) => !isProfileInCooldown(store, profileId)) ??
+    order[0];
+  const pickNextAvailable = (active: string) => {
+    if (preferredAnthropicAutoProfile) {
+      return preferredAnthropicAutoProfile;
+    }
+    const startIndex = order.indexOf(active);
+    if (startIndex < 0) {
+      return pickFirstAvailable();
+    }
+    for (let offset = 1; offset <= order.length; offset += 1) {
+      const candidate = order[(startIndex + offset) % order.length];
+      if (!isProfileInCooldown(store, candidate)) {
+        return candidate;
+      }
+    }
+    return order[startIndex] ?? order[0];
+  };
+
   if (source === "user" && current && !isNewSession) {
     return current;
   }

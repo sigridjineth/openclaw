@@ -849,6 +849,9 @@ describe("classifyFailoverReason", () => {
   });
   it("classifies permanent auth errors as auth_permanent", () => {
     expect(classifyFailoverReason("invalid_api_key")).toBe("auth_permanent");
+    expect(classifyFailoverReason("HTTP 401: authentication_error: invalid x-api-key")).toBe(
+      "auth_permanent",
+    );
     expect(classifyFailoverReason("Your api key has been revoked")).toBe("auth_permanent");
     expect(classifyFailoverReason("key has been disabled")).toBe("auth_permanent");
     expect(classifyFailoverReason("account has been deactivated")).toBe("auth_permanent");
