@@ -22,6 +22,7 @@ import { normalizeMainKey } from "../../routing/session-key.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { buildInboundMediaNote } from "../media-note.js";
+import { classifyTaskComplexity, buildComplexityHint } from "../task-complexity.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import {
   type ElevatedLevel,
@@ -268,13 +269,19 @@ export async function runPreparedReply(
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
   );
+  const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
+
+  // Task complexity classification (ultraworker + ouroboros pattern)
+  const taskComplexityResult = classifyTaskComplexity(baseBody);
+  const taskComplexityHint = buildComplexityHint(taskComplexityResult);
+
   const extraSystemPromptParts = [
     inboundMetaPrompt,
     groupChatContext,
     groupIntro,
     groupSystemPrompt,
+    taskComplexityHint,
   ].filter(Boolean);
-  const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
   const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
   const baseBodyTrimmedRaw = baseBody.trim();
