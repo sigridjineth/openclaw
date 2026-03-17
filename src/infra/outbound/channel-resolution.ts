@@ -93,5 +93,14 @@ export function resolveOutboundChannelPlugin(params: {
   }
 
   maybeBootstrapChannelPlugin({ channel: normalized, cfg: params.cfg });
-  return resolve() ?? resolveDirectFromActiveRegistry(normalized);
+  const result = resolve() ?? resolveDirectFromActiveRegistry(normalized);
+  if (!result) {
+    // Clear bootstrap attempt cache so next call will retry plugin loading.
+    // This handles cases where Discord WS reconnects but the plugin wasn't
+    // properly registered during the first bootstrap attempt.
+    const registryKey = getActivePluginRegistryKey() ?? "<none>";
+    const attemptKey = `${registryKey}:${normalized}`;
+    bootstrapAttempts.delete(attemptKey);
+  }
+  return result;
 }

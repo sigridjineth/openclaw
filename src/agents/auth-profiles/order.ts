@@ -150,7 +150,7 @@ export function resolveAuthProfileOrder(params: {
   // Otherwise, use round-robin: sort by lastUsed (oldest first)
   // preferredProfile goes first if specified (for explicit user choice)
   // lastGood is NOT prioritized - that would defeat round-robin
-  const sorted = orderProfilesByMode(deduped, store);
+  const sorted = orderProfilesByMode(deduped, store, provider);
 
   if (preferredProfile && sorted.includes(preferredProfile)) {
     return [preferredProfile, ...sorted.filter((e) => e !== preferredProfile)];
@@ -159,7 +159,34 @@ export function resolveAuthProfileOrder(params: {
   return sorted;
 }
 
-function orderProfilesByMode(order: string[], store: AuthProfileStore): string[] {
+function resolveCredentialTypeScore(provider: string, profileType: string | undefined): number {
+  // Anthropic OAuth is a legacy path in OpenClaw; prefer API keys/setup-tokens
+  // whenever they coexist with stale OAuth credentials.
+  if (normalizeProviderId(provider) === "anthropic") {
+    if (profileType === "api_key") {
+      return 0;
+    }
+    if (profileType === "token") {
+      return 1;
+    }
+    if (profileType === "oauth") {
+      return 2;
+    }
+    return 3;
+  }
+  if (profileType === "oauth") {
+    return 0;
+  }
+  if (profileType === "token") {
+    return 1;
+  }
+  if (profileType === "api_key") {
+    return 2;
+  }
+  return 3;
+}
+
+function orderProfilesByMode(order: string[], store: AuthProfileStore, provider: string): string[] {
   const now = Date.now();
 
   // Partition into available and in-cooldown
@@ -174,23 +201,20 @@ function orderProfilesByMode(order: string[], store: AuthProfileStore): string[]
     }
   }
 
-  // Sort available profiles by type preference, then by lastUsed (oldest first = round-robin within type)
+  // Sort available profiles by provider-aware type preference, then by
+  // lastUsed (oldest first = round-robin within the same credential type).
   const scored = available.map((profileId) => {
     const type = store.profiles[profileId]?.type;
-    const typeScore = type === "oauth" ? 0 : type === "token" ? 1 : type === "api_key" ? 2 : 3;
+    const typeScore = resolveCredentialTypeScore(provider, type);
     const lastUsed = store.usageStats?.[profileId]?.lastUsed ?? 0;
     return { profileId, typeScore, lastUsed };
   });
 
-  // Primary sort: type preference (oauth > token > api_key).
-  // Secondary sort: lastUsed (oldest first for round-robin within type).
   const sorted = scored
     .toSorted((a, b) => {
-      // First by type (oauth > token > api_key)
       if (a.typeScore !== b.typeScore) {
         return a.typeScore - b.typeScore;
       }
-      // Then by lastUsed (oldest first)
       return a.lastUsed - b.lastUsed;
     })
     .map((entry) => entry.profileId);
