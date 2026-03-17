@@ -11,7 +11,7 @@ import type { EmbeddedRunAttemptResult } from "./pi-embedded-runner/run/types.js
 
 const runEmbeddedAttemptMock = vi.fn<(params: unknown) => Promise<EmbeddedRunAttemptResult>>();
 const resolveCopilotApiTokenMock = vi.fn();
-const { computeBackoffMock, sleepWithAbortMock } = vi.hoisted(() => ({
+const { computeBackoffMock, sleepWithAbortMock, getOAuthApiKeyMock } = vi.hoisted(() => ({
   computeBackoffMock: vi.fn(
     (
       _policy: { initialMs: number; maxMs: number; factor: number; jitter: number },
@@ -19,6 +19,7 @@ const { computeBackoffMock, sleepWithAbortMock } = vi.hoisted(() => ({
     ) => 321,
   ),
   sleepWithAbortMock: vi.fn(async (_ms: number, _abortSignal?: AbortSignal) => undefined),
+  getOAuthApiKeyMock: vi.fn(),
 }));
 
 vi.mock("./pi-embedded-runner/run/attempt.js", () => ({
@@ -31,6 +32,13 @@ vi.mock("../infra/backoff.js", () => ({
     attempt: number,
   ) => computeBackoffMock(policy, attempt),
   sleepWithAbort: (ms: number, abortSignal?: AbortSignal) => sleepWithAbortMock(ms, abortSignal),
+}));
+
+vi.mock("@mariozechner/pi-ai/oauth", () => ({
+  getOAuthApiKey: (...args: unknown[]) => getOAuthApiKeyMock(...args),
+  getOAuthProviders: () => [
+    { id: "anthropic", envApiKey: "ANTHROPIC_API_KEY", oauthTokenEnv: "ANTHROPIC_OAUTH_TOKEN" },
+  ],
 }));
 
 vi.mock("../providers/github-copilot-token.js", () => ({
@@ -87,6 +95,7 @@ beforeEach(() => {
   vi.useRealTimers();
   runEmbeddedAttemptMock.mockClear();
   resolveCopilotApiTokenMock.mockReset();
+  getOAuthApiKeyMock.mockReset();
   computeBackoffMock.mockClear();
   sleepWithAbortMock.mockClear();
 });
@@ -232,6 +241,48 @@ const makeCopilotConfig = (): OpenClawConfig =>
       },
     },
   }) satisfies OpenClawConfig;
+
+const makeAnthropicConfig = (): OpenClawConfig =>
+  ({
+    models: {
+      providers: {
+        anthropic: {
+          api: "anthropic-messages",
+          baseUrl: "https://api.anthropic.com",
+          models: [
+            {
+              id: "claude-sonnet-4-6",
+              name: "Claude Sonnet 4.6",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 16_000,
+              maxTokens: 2048,
+            },
+          ],
+        },
+      },
+    },
+  }) satisfies OpenClawConfig;
+
+const writeAnthropicOauthStore = async (agentDir: string, access: string, expires: number) => {
+  const authPath = path.join(agentDir, "auth-profiles.json");
+  await fs.writeFile(
+    authPath,
+    JSON.stringify({
+      version: 1,
+      profiles: {
+        "anthropic:default": {
+          type: "oauth",
+          provider: "anthropic",
+          access,
+          refresh: "refresh-token",
+          expires,
+        },
+      },
+    }),
+  );
+};
 
 const writeAuthStore = async (
   agentDir: string,
@@ -663,6 +714,78 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
       expect(resolveCopilotApiTokenMock).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
+      await fs.rm(agentDir, { recursive: true, force: true });
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("force refreshes stale anthropic oauth after auth error before rotating profiles", async () => {
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-"));
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-workspace-"));
+    try {
+      await writeAnthropicOauthStore(agentDir, "anthropic-stale", Date.now() + 60 * 60 * 1000);
+      getOAuthApiKeyMock.mockResolvedValueOnce({
+        apiKey: "anthropic-fresh",
+        newCredentials: {
+          access: "anthropic-fresh",
+          refresh: "refresh-token-2",
+          expires: Date.now() + 2 * 60 * 60 * 1000,
+        },
+      });
+
+      runEmbeddedAttemptMock
+        .mockResolvedValueOnce(
+          makeAttempt({
+            assistantTexts: [],
+            lastAssistant: buildAssistant({
+              api: "anthropic-messages",
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              stopReason: "error",
+              errorMessage: "401 unauthorized",
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          makeAttempt({
+            assistantTexts: ["ok"],
+            lastAssistant: buildAssistant({
+              api: "anthropic-messages",
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              stopReason: "stop",
+              content: [{ type: "text", text: "ok" }],
+            }),
+          }),
+        );
+
+      const result = await runEmbeddedPiAgent({
+        sessionId: "session:test",
+        sessionKey: "agent:test:anthropic-oauth-refresh",
+        sessionFile: path.join(workspaceDir, "session.jsonl"),
+        workspaceDir,
+        agentDir,
+        config: makeAnthropicConfig(),
+        prompt: "hello",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        authProfileIdSource: "auto",
+        timeoutMs: 5_000,
+        runId: "run:anthropic-oauth-refresh",
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(2);
+      expect(getOAuthApiKeyMock).toHaveBeenCalledTimes(1);
+      const refreshed = JSON.parse(
+        await fs.readFile(path.join(agentDir, "auth-profiles.json"), "utf8"),
+      );
+      expect(refreshed.profiles["anthropic:default"]).toMatchObject({
+        access: "anthropic-fresh",
+        refresh: "refresh-token-2",
+      });
+      expect(refreshed.usageStats?.["anthropic:default"]?.cooldownUntil).toBeUndefined();
+      expect(result.payloads?.[0]?.text).toBe("ok");
+    } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }

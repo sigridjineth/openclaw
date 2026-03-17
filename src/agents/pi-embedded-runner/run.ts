@@ -15,6 +15,7 @@ import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js"
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { hasConfiguredModelFallbacks } from "../agent-scope.js";
 import {
+  forceRefreshOAuthProfile,
   isProfileInCooldown,
   type AuthProfileFailureReason,
   markAuthProfileFailure,
@@ -791,6 +792,42 @@ export async function runEmbeddedPiAgent(
         }
       }
 
+      const oauthAuthErrorRefreshAttempts = new Set<string>();
+      const maybeRefreshOAuthProfileForAuthError = async (
+        errorText: string,
+        retried: boolean,
+      ): Promise<boolean> => {
+        if (retried || !lastProfileId || !isFailoverErrorMessage(errorText)) {
+          return false;
+        }
+        if (classifyFailoverReason(errorText) !== "auth") {
+          return false;
+        }
+        if (oauthAuthErrorRefreshAttempts.has(lastProfileId)) {
+          return false;
+        }
+        try {
+          const refreshed = await forceRefreshOAuthProfile({
+            store: authStore,
+            profileId: lastProfileId,
+            agentDir,
+          });
+          if (!refreshed) {
+            return false;
+          }
+          oauthAuthErrorRefreshAttempts.add(lastProfileId);
+          await applyApiKeyInfo(lastProfileId);
+          log.warn(`refreshed oauth auth profile after auth error: ${lastProfileId}`);
+          return true;
+        } catch (error) {
+          oauthAuthErrorRefreshAttempts.add(lastProfileId);
+          log.warn(
+            `oauth auth profile refresh after auth error failed for ${lastProfileId}: ${describeUnknownError(error)}`,
+          );
+          return false;
+        }
+      };
+
       const maybeRefreshRuntimeAuthForAuthError = async (
         errorText: string,
         retried: boolean,
@@ -1368,6 +1405,13 @@ export async function runEmbeddedPiAgent(
             }
             const promptFailoverReason =
               promptErrorDetails.reason ?? classifyFailoverReason(errorText);
+            if (
+              promptFailoverReason === "auth" &&
+              (await maybeRefreshOAuthProfileForAuthError(errorText, runtimeAuthRetry))
+            ) {
+              authRetryPending = true;
+              continue;
+            }
             const promptProfileFailureReason =
               resolveAuthProfileFailureReason(promptFailoverReason);
             await maybeMarkAuthProfileFailure({
@@ -1474,6 +1518,16 @@ export async function runEmbeddedPiAgent(
           if (
             authFailure &&
             (await maybeRefreshRuntimeAuthForAuthError(
+              lastAssistant?.errorMessage ?? "",
+              runtimeAuthRetry,
+            ))
+          ) {
+            authRetryPending = true;
+            continue;
+          }
+          if (
+            authFailure &&
+            (await maybeRefreshOAuthProfileForAuthError(
               lastAssistant?.errorMessage ?? "",
               runtimeAuthRetry,
             ))

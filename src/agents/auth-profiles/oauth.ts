@@ -20,6 +20,7 @@ import { ensureAuthProfileStore, saveAuthProfileStore } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
 const OAUTH_PROVIDER_IDS = new Set<string>(getOAuthProviders().map((provider) => provider.id));
+const ANTHROPIC_OAUTH_EARLY_EXPIRY_GRACE_MS = 5 * 60 * 1000;
 
 const isOAuthProvider = (provider: string): provider is OAuthProvider =>
   OAUTH_PROVIDER_IDS.has(provider);
@@ -109,6 +110,29 @@ function shouldUseOpenaiCodexRefreshFallback(params: {
   );
 }
 
+function shouldUseAnthropicCachedAccessFallback(params: {
+  provider: string;
+  credentials: OAuthCredentials;
+  now?: number;
+}): boolean {
+  if (normalizeProviderId(params.provider) !== "anthropic") {
+    return false;
+  }
+  if (
+    typeof params.credentials.access !== "string" ||
+    params.credentials.access.trim().length === 0 ||
+    !Number.isFinite(params.credentials.expires)
+  ) {
+    return false;
+  }
+
+  // pi-ai currently stores Anthropic OAuth expiry 5 minutes early. If refresh fails inside
+  // that safety window, the cached access token may still be valid and matches CLIProxyAPI's
+  // exact-expiry behavior more closely.
+  const now = params.now ?? Date.now();
+  return now < params.credentials.expires + ANTHROPIC_OAUTH_EARLY_EXPIRY_GRACE_MS;
+}
+
 type ResolveApiKeyForProfileParams = {
   cfg?: OpenClawConfig;
   store: AuthProfileStore;
@@ -158,6 +182,7 @@ function adoptNewerMainOAuthCredential(params: {
 async function refreshOAuthTokenWithLock(params: {
   profileId: string;
   agentDir?: string;
+  force?: boolean;
 }): Promise<{ apiKey: string; newCredentials: OAuthCredentials } | null> {
   const authPath = resolveAuthStorePath(params.agentDir);
   ensureAuthStoreFile(authPath);
@@ -169,7 +194,7 @@ async function refreshOAuthTokenWithLock(params: {
       return null;
     }
 
-    if (Date.now() < cred.expires) {
+    if (!params.force && Date.now() < cred.expires) {
       return {
         apiKey: buildOAuthApiKey(cred.provider, cred),
         newCredentials: cred,
@@ -304,6 +329,41 @@ async function resolveProfileSecretString(params: {
   }
 
   return resolvedValue;
+}
+
+export async function forceRefreshOAuthProfile(params: {
+  store: AuthProfileStore;
+  profileId: string;
+  agentDir?: string;
+}): Promise<{ apiKey: string; provider: string; email?: string } | null> {
+  const existing = params.store.profiles[params.profileId];
+  if (!existing || existing.type !== "oauth") {
+    return null;
+  }
+
+  const result = await refreshOAuthTokenWithLock({
+    profileId: params.profileId,
+    agentDir: params.agentDir,
+    force: true,
+  });
+  if (!result) {
+    return null;
+  }
+
+  const refreshedStore = ensureAuthProfileStore(params.agentDir);
+  const refreshedCredential = refreshedStore.profiles[params.profileId];
+  if (refreshedCredential?.type === "oauth") {
+    params.store.profiles[params.profileId] = { ...refreshedCredential };
+  }
+
+  return buildApiKeyProfileResult({
+    apiKey: result.apiKey,
+    provider: existing.provider,
+    email:
+      refreshedCredential?.type === "oauth"
+        ? (refreshedCredential.email ?? existing.email)
+        : existing.email,
+  });
 }
 
 export async function resolveApiKeyForProfile(
@@ -467,6 +527,26 @@ export async function resolveApiKeyForProfile(
         profileId,
         provider: cred.provider,
       });
+      return buildApiKeyProfileResult({
+        apiKey: cred.access,
+        provider: cred.provider,
+        email: cred.email,
+      });
+    }
+
+    if (
+      shouldUseAnthropicCachedAccessFallback({
+        provider: cred.provider,
+        credentials: cred,
+      })
+    ) {
+      log.warn(
+        "anthropic oauth refresh failed inside early-expiry window; using cached access token fallback",
+        {
+          profileId,
+          provider: cred.provider,
+        },
+      );
       return buildApiKeyProfileResult({
         apiKey: cred.access,
         provider: cred.provider,
