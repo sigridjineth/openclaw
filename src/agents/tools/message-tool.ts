@@ -443,6 +443,9 @@ function buildChannelManagementSchema() {
         description: "Clear the parent/category when supported by the provider.",
       }),
     ),
+    archived: Type.Optional(Type.Boolean()),
+    locked: Type.Optional(Type.Boolean()),
+    autoArchiveDuration: Type.Optional(Type.Number()),
   };
 }
 
