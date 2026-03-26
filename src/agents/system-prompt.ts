@@ -298,6 +298,7 @@ export function buildAgentSystemPrompt(params: {
     "image",
   ];
 
+  const toolNamesProvided = Array.isArray(params.toolNames);
   const rawToolNames = (params.toolNames ?? []).map((tool) => tool.trim());
   const canonicalToolNames = rawToolNames.filter(Boolean);
   // Preserve caller casing while deduping tool names by lowercase.
@@ -337,11 +338,36 @@ export function buildAgentSystemPrompt(params: {
     const name = resolveToolName(tool);
     toolLines.push(summary ? `- ${name}: ${summary}` : `- ${name}`);
   }
-
   const hasGateway = availableTools.has("gateway");
   const readToolName = resolveToolName("read");
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
+  const toolAvailabilityBlock =
+    toolLines.length > 0
+      ? toolLines.join("\n")
+      : toolNamesProvided
+        ? [
+            "No tools are enabled for this runtime.",
+            "Reply with text only. Do not claim you can browse, edit files, run commands, install things, or otherwise call tools from this turn.",
+          ].join("\n")
+        : [
+            "Pi lists the standard tools above. This runtime enables:",
+            "- grep: search file contents for patterns",
+            "- find: find files by glob pattern",
+            "- ls: list directory contents",
+            "- apply_patch: apply multi-file patches",
+            `- ${execToolName}: run shell commands (supports background via yieldMs/background)`,
+            `- ${processToolName}: manage background exec sessions`,
+            "- browser: control OpenClaw's dedicated browser",
+            "- canvas: present/eval/snapshot the Canvas",
+            "- nodes: list/describe/notify/camera/screen on paired nodes",
+            "- cron: manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
+            "- sessions_list: list sessions",
+            "- sessions_history: fetch session history",
+            "- sessions_send: send to another session",
+            "- subagents: list/steer/kill sub-agent runs",
+            '- session_status: show usage/time/model state and answer "what model are we using?"',
+          ].join("\n");
   const extraSystemPrompt = params.extraSystemPrompt?.trim();
   const ownerDisplay = params.ownerDisplay === "hash" ? "hash" : "raw";
   const ownerLine = buildOwnerIdentityLine(
@@ -425,26 +451,7 @@ export function buildAgentSystemPrompt(params: {
     "## Tooling",
     "Tool availability (filtered by policy):",
     "Tool names are case-sensitive. Call tools exactly as listed.",
-    toolLines.length > 0
-      ? toolLines.join("\n")
-      : [
-          "Pi lists the standard tools above. This runtime enables:",
-          "- grep: search file contents for patterns",
-          "- find: find files by glob pattern",
-          "- ls: list directory contents",
-          "- apply_patch: apply multi-file patches",
-          `- ${execToolName}: run shell commands (supports background via yieldMs/background)`,
-          `- ${processToolName}: manage background exec sessions`,
-          "- browser: control OpenClaw's dedicated browser",
-          "- canvas: present/eval/snapshot the Canvas",
-          "- nodes: list/describe/notify/camera/screen on paired nodes",
-          "- cron: manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
-          "- sessions_list: list sessions",
-          "- sessions_history: fetch session history",
-          "- sessions_send: send to another session",
-          "- subagents: list/steer/kill sub-agent runs",
-          '- session_status: show usage/time/model state and answer "what model are we using?"',
-        ].join("\n"),
+    toolAvailabilityBlock,
     "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
     `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
     "If a task is more complex or takes longer, spawn a sub-agent. Completion is push-based: it will auto-announce when done.",

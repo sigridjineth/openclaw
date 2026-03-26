@@ -107,6 +107,45 @@ describe("runCliAgent with process supervisor", () => {
     expect(input.scopeKey).toContain("thread-123");
   });
 
+  it("injects text-only CLI backend guidance into the system prompt", async () => {
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: "ok",
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+
+    await runCliAgent({
+      sessionId: "s-cli",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      prompt: "hi",
+      provider: "claude-cli",
+      model: "opus-4.6",
+      timeoutMs: 1_000,
+      runId: "run-cli-guidance",
+    });
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as { argv?: string[] };
+    const systemPromptIndex = input.argv?.indexOf("--append-system-prompt") ?? -1;
+    expect(systemPromptIndex).toBeGreaterThanOrEqual(0);
+    const systemPrompt = input.argv?.[systemPromptIndex + 1] ?? "";
+    expect(systemPrompt).toContain("No tools are enabled for this runtime.");
+    expect(systemPrompt).toContain("This run is using a text-only CLI backend.");
+    expect(systemPrompt).toContain(
+      "Do not tell the user to enable tools, restart the gateway, or change config just to work around this runtime limitation.",
+    );
+    expect(systemPrompt).toContain(
+      "If you mention an OpenClaw command, only use exact commands from this prompt. Never invent config files or settings paths.",
+    );
+  });
+
   it("fails with timeout when no-output watchdog trips", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({

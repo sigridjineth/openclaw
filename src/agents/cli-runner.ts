@@ -107,7 +107,11 @@ export async function runCliAgent(params: {
 
   const extraSystemPrompt = [
     params.extraSystemPrompt?.trim(),
-    "Tools are disabled in this session. Do not call tools.",
+    "This run is using a text-only CLI backend. OpenClaw tools are unavailable in this run, even if the surrounding session normally has tools.",
+    "Do not claim you can browse, install, edit files, restart services, or otherwise use OpenClaw tools from this run.",
+    "Do not tell the user to enable tools, restart the gateway, or change config just to work around this runtime limitation.",
+    "If the request truly requires tools, say this run is text-only and ask them to retry on a tool-capable runtime.",
+    "If you mention an OpenClaw command, only use exact commands from this prompt. Never invent config files or settings paths.",
   ]
     .filter(Boolean)
     .join("\n");

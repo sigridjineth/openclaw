@@ -240,6 +240,19 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("sessions_send");
   });
 
+  it("shows an explicit no-tools notice when toolNames is an empty array", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+    });
+
+    expect(prompt).toContain("No tools are enabled for this runtime.");
+    expect(prompt).toContain("Reply with text only.");
+    expect(prompt).not.toContain("Pi lists the standard tools above.");
+    expect(prompt).not.toContain("- browser: control OpenClaw's dedicated browser");
+    expect(prompt).not.toContain("- exec: run shell commands");
+  });
+
   it("documents ACP sessions_spawn agent targeting requirements", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
