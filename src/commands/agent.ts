@@ -19,7 +19,12 @@ import { ensureAuthProfileStore } from "../agents/auth-profiles.js";
 import { clearSessionAuthProfileOverride } from "../agents/auth-profiles/session-override.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../agents/bootstrap-budget.js";
 import { runCliAgent } from "../agents/cli-runner.js";
-import { getCliSessionId, setCliSessionId } from "../agents/cli-session.js";
+import {
+  clearCliSessionId,
+  getCliSessionId,
+  setCliSessionId,
+  shouldRetryFreshCliSession,
+} from "../agents/cli-session.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { FailoverError } from "../agents/failover-error.js";
 import { formatAgentInternalEventsForPrompt } from "../agents/internal-events.js";
@@ -31,7 +36,6 @@ import {
   isCliProvider,
   modelKey,
   normalizeModelRef,
-  normalizeProviderId,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
   resolveThinkingDefault,
@@ -378,32 +382,27 @@ function runAgentAttempt(params: {
         streamParams: params.opts.streamParams,
       });
     return runCliWithSession(cliSessionId).catch(async (err) => {
-      // Handle CLI session expired error
       if (
-        err instanceof FailoverError &&
-        err.reason === "session_expired" &&
+        shouldRetryFreshCliSession({
+          error: err,
+          provider: params.providerOverride,
+          cliSessionId,
+        }) &&
         cliSessionId &&
         params.sessionKey &&
         params.sessionStore &&
         params.storePath
       ) {
+        const retryReason =
+          err instanceof FailoverError && err.reason === "timeout" ? "stalled" : "expired";
         log.warn(
-          `CLI session expired, clearing from session store: provider=${params.providerOverride} sessionKey=${params.sessionKey}`,
+          `CLI session ${retryReason}, clearing from session store: provider=${params.providerOverride} sessionKey=${params.sessionKey}`,
         );
 
-        // Clear the expired session ID from the session store
         const entry = params.sessionStore[params.sessionKey];
         if (entry) {
           const updatedEntry = { ...entry };
-          if (params.providerOverride === "claude-cli") {
-            delete updatedEntry.claudeCliSessionId;
-          }
-          if (updatedEntry.cliSessionIds) {
-            const normalizedProvider = normalizeProviderId(params.providerOverride);
-            const newCliSessionIds = { ...updatedEntry.cliSessionIds };
-            delete newCliSessionIds[normalizedProvider];
-            updatedEntry.cliSessionIds = newCliSessionIds;
-          }
+          clearCliSessionId(updatedEntry, params.providerOverride);
           updatedEntry.updatedAt = Date.now();
 
           await persistSessionEntry({
@@ -417,9 +416,7 @@ function runAgentAttempt(params: {
           params.sessionEntry = updatedEntry;
         }
 
-        // Retry with no session ID (will create a new session)
         return runCliWithSession(undefined).then(async (result) => {
-          // Update session store with new CLI session ID if available
           if (
             result.meta.agentMeta?.sessionId &&
             params.sessionKey &&

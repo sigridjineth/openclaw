@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
-import { getCliSessionId } from "../../agents/cli-session.js";
+import {
+  clearCliSessionId,
+  getCliSessionId,
+  shouldRetryFreshCliSession,
+} from "../../agents/cli-session.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import {
@@ -19,6 +23,7 @@ import {
   resolveGroupSessionKey,
   resolveSessionTranscriptPath,
   type SessionEntry,
+  updateSessionStoreEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
@@ -222,31 +227,75 @@ export async function runAgentTurnWithFallback(params: {
               },
             });
             const cliSessionId = getCliSessionId(params.getActiveSessionEntry(), provider);
+            const runCliWithSession = (nextCliSessionId: string | undefined) =>
+              runCliAgent({
+                sessionId: params.followupRun.run.sessionId,
+                sessionKey: params.sessionKey,
+                agentId: params.followupRun.run.agentId,
+                sessionFile: params.followupRun.run.sessionFile,
+                workspaceDir: params.followupRun.run.workspaceDir,
+                config: params.followupRun.run.config,
+                prompt: params.commandBody,
+                provider,
+                model,
+                thinkLevel: params.followupRun.run.thinkLevel,
+                timeoutMs: params.followupRun.run.timeoutMs,
+                runId,
+                extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+                ownerNumbers: params.followupRun.run.ownerNumbers,
+                cliSessionId: nextCliSessionId,
+                bootstrapPromptWarningSignaturesSeen,
+                bootstrapPromptWarningSignature:
+                  bootstrapPromptWarningSignaturesSeen[
+                    bootstrapPromptWarningSignaturesSeen.length - 1
+                  ],
+                images: params.opts?.images,
+              });
             return (async () => {
               let lifecycleTerminalEmitted = false;
               try {
-                const result = await runCliAgent({
-                  sessionId: params.followupRun.run.sessionId,
-                  sessionKey: params.sessionKey,
-                  agentId: params.followupRun.run.agentId,
-                  sessionFile: params.followupRun.run.sessionFile,
-                  workspaceDir: params.followupRun.run.workspaceDir,
-                  config: params.followupRun.run.config,
-                  prompt: params.commandBody,
-                  provider,
-                  model,
-                  thinkLevel: params.followupRun.run.thinkLevel,
-                  timeoutMs: params.followupRun.run.timeoutMs,
-                  runId,
-                  extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
-                  ownerNumbers: params.followupRun.run.ownerNumbers,
-                  cliSessionId,
-                  bootstrapPromptWarningSignaturesSeen,
-                  bootstrapPromptWarningSignature:
-                    bootstrapPromptWarningSignaturesSeen[
-                      bootstrapPromptWarningSignaturesSeen.length - 1
-                    ],
-                  images: params.opts?.images,
+                const result = await runCliWithSession(cliSessionId).catch(async (err) => {
+                  if (
+                    !shouldRetryFreshCliSession({
+                      error: err,
+                      provider,
+                      cliSessionId,
+                    }) ||
+                    !cliSessionId ||
+                    !params.sessionKey ||
+                    !params.activeSessionStore ||
+                    !params.storePath
+                  ) {
+                    throw err;
+                  }
+
+                  const retryReason =
+                    err instanceof Error && /CLI produced no output/i.test(err.message)
+                      ? "stalled"
+                      : "expired";
+                  defaultRuntime.error(
+                    `CLI session ${retryReason} before reply, clearing stored session and retrying fresh: provider=${provider} sessionKey=${params.sessionKey}`,
+                  );
+
+                  const updatedEntry = await updateSessionStoreEntry({
+                    storePath: params.storePath,
+                    sessionKey: params.sessionKey,
+                    update: async (entry) => {
+                      const nextEntry = { ...entry };
+                      clearCliSessionId(nextEntry, provider);
+                      nextEntry.updatedAt = Date.now();
+                      return {
+                        cliSessionIds: nextEntry.cliSessionIds,
+                        claudeCliSessionId: nextEntry.claudeCliSessionId,
+                        updatedAt: nextEntry.updatedAt,
+                      };
+                    },
+                  });
+                  if (updatedEntry) {
+                    params.activeSessionStore[params.sessionKey] = updatedEntry;
+                  }
+
+                  return await runCliWithSession(undefined);
                 });
                 bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
                   result.meta?.systemPromptReport,

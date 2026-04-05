@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FailoverError } from "../../agents/failover-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
@@ -1025,8 +1026,14 @@ describe("runReplyAgent block streaming", () => {
 });
 
 describe("runReplyAgent claude-cli routing", () => {
-  function createRun() {
+  function createRun(params?: {
+    sessionEntry?: SessionEntry;
+    sessionStore?: Record<string, SessionEntry>;
+    sessionKey?: string;
+    storePath?: string;
+  }) {
     const typing = createMockTypingController();
+    const sessionKey = params?.sessionKey ?? "main";
     const sessionCtx = {
       Provider: "webchat",
       OriginatingTo: "session:1",
@@ -1072,6 +1079,10 @@ describe("runReplyAgent claude-cli routing", () => {
       isStreaming: false,
       typing,
       sessionCtx,
+      sessionEntry: params?.sessionEntry,
+      sessionStore: params?.sessionStore,
+      sessionKey,
+      storePath: params?.storePath,
       defaultModel: "claude-cli/opus-4.5",
       resolvedVerboseLevel: "off",
       isNewSession: false,
@@ -1115,6 +1126,114 @@ describe("runReplyAgent claude-cli routing", () => {
     expect(runCliAgentMock).toHaveBeenCalledTimes(1);
     expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
     expect(lifecyclePhases).toEqual(["start", "end"]);
+    expect(result).toMatchObject({ text: "ok" });
+  });
+
+  it("retries claude-cli with a fresh session after watchdog no-output timeout", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-claude-cli-timeout-"));
+    const storePath = path.join(tmp, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      providerOverride: "claude-cli",
+      modelOverride: "opus-4.5",
+      cliSessionIds: { "claude-cli": "stale-cli-session" },
+      claudeCliSessionId: "stale-legacy-session",
+    } satisfies SessionEntry;
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await saveSessionStore(storePath, sessionStore);
+
+    runCliAgentMock
+      .mockRejectedValueOnce(
+        new FailoverError("CLI produced no output for 180s and was terminated.", {
+          reason: "timeout",
+          provider: "claude-cli",
+          model: "opus-4.5",
+          status: 408,
+        }),
+      )
+      .mockResolvedValueOnce({
+        payloads: [{ text: "ok" }],
+        meta: {
+          agentMeta: {
+            provider: "claude-cli",
+            model: "opus-4.5",
+            sessionId: "fresh-cli-session",
+          },
+        },
+      });
+
+    const result = await createRun({
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+    });
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(2);
+    expect(runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      cliSessionId: "stale-cli-session",
+    });
+    expect(runCliAgentMock.mock.calls[1]?.[0]).toMatchObject({
+      cliSessionId: undefined,
+    });
+    expect(result).toMatchObject({ text: "ok" });
+
+    const stored = loadSessionStore(storePath, { skipCache: true });
+    expect(stored[sessionKey]?.cliSessionIds?.["claude-cli"]).toBe("fresh-cli-session");
+    expect(stored[sessionKey]?.claudeCliSessionId).toBe("fresh-cli-session");
+  });
+
+  it("retries claude-cli with a fresh session after missing conversation errors", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-claude-cli-missing-"));
+    const storePath = path.join(tmp, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      providerOverride: "claude-cli",
+      modelOverride: "opus-4.5",
+      cliSessionIds: { "claude-cli": "stale-cli-session" },
+      claudeCliSessionId: "stale-legacy-session",
+    } satisfies SessionEntry;
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await saveSessionStore(storePath, sessionStore);
+
+    runCliAgentMock
+      .mockRejectedValueOnce(
+        new FailoverError("No conversation found with session ID: stale-cli-session", {
+          reason: "unknown",
+          provider: "claude-cli",
+          model: "opus-4.5",
+          status: 404,
+        }),
+      )
+      .mockResolvedValueOnce({
+        payloads: [{ text: "ok" }],
+        meta: {
+          agentMeta: {
+            provider: "claude-cli",
+            model: "opus-4.5",
+            sessionId: "fresh-cli-session",
+          },
+        },
+      });
+
+    const result = await createRun({
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+    });
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(2);
+    expect(runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      cliSessionId: "stale-cli-session",
+    });
+    expect(runCliAgentMock.mock.calls[1]?.[0]).toMatchObject({
+      cliSessionId: undefined,
+    });
     expect(result).toMatchObject({ text: "ok" });
   });
 });

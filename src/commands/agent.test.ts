@@ -805,6 +805,118 @@ describe("agentCommand", () => {
     }
   });
 
+  it("clears stale Claude CLI session IDs before retrying after watchdog no-output timeout", async () => {
+    vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(
+      (provider) => provider.trim().toLowerCase() === "claude-cli",
+    );
+    try {
+      await withTempHome(async (home) => {
+        const store = path.join(home, "sessions.json");
+        const sessionKey = "agent:main:subagent:cli-timeout";
+        writeSessionStoreSeed(store, {
+          [sessionKey]: {
+            sessionId: "session-cli-456",
+            updatedAt: Date.now(),
+            providerOverride: "claude-cli",
+            modelOverride: "opus",
+            cliSessionIds: { "claude-cli": "stale-cli-session" },
+            claudeCliSessionId: "stale-legacy-session",
+          },
+        });
+        mockConfig(home, store, {
+          model: { primary: "claude-cli/opus", fallbacks: [] },
+          models: { "claude-cli/opus": {} },
+        });
+        runCliAgentSpy
+          .mockRejectedValueOnce(
+            new FailoverError("CLI produced no output for 180s and was terminated.", {
+              reason: "timeout",
+              provider: "claude-cli",
+              model: "opus",
+              status: 408,
+            }),
+          )
+          .mockRejectedValue(new Error("retry failed"));
+
+        await expect(agentCommand({ message: "hi", sessionKey }, runtime)).rejects.toThrow(
+          "retry failed",
+        );
+
+        expect(runCliAgentSpy).toHaveBeenCalledTimes(2);
+        const firstCall = runCliAgentSpy.mock.calls[0]?.[0] as
+          | { cliSessionId?: string }
+          | undefined;
+        const secondCall = runCliAgentSpy.mock.calls[1]?.[0] as
+          | { cliSessionId?: string }
+          | undefined;
+        expect(firstCall?.cliSessionId).toBe("stale-cli-session");
+        expect(secondCall?.cliSessionId).toBeUndefined();
+
+        const saved = JSON.parse(fs.readFileSync(store, "utf-8")) as Record<
+          string,
+          { cliSessionIds?: Record<string, string>; claudeCliSessionId?: string }
+        >;
+        const entry = saved[sessionKey];
+        expect(entry?.cliSessionIds?.["claude-cli"]).toBeUndefined();
+        expect(entry?.claudeCliSessionId).toBeUndefined();
+      });
+    } finally {
+      vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(() => false);
+    }
+  });
+
+  it("clears stale Claude CLI session IDs before retrying after missing conversation errors", async () => {
+    vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(
+      (provider) => provider.trim().toLowerCase() === "claude-cli",
+    );
+    try {
+      await withTempHome(async (home) => {
+        const store = path.join(home, "sessions.json");
+        const sessionKey = "agent:main:subagent:cli-conversation-missing";
+        writeSessionStoreSeed(store, {
+          [sessionKey]: {
+            sessionId: "session-cli-789",
+            updatedAt: Date.now(),
+            providerOverride: "claude-cli",
+            modelOverride: "opus",
+            cliSessionIds: { "claude-cli": "stale-cli-session" },
+            claudeCliSessionId: "stale-legacy-session",
+          },
+        });
+        mockConfig(home, store, {
+          model: { primary: "claude-cli/opus", fallbacks: [] },
+          models: { "claude-cli/opus": {} },
+        });
+        runCliAgentSpy
+          .mockRejectedValueOnce(
+            new FailoverError("No conversation found with session ID: stale-cli-session", {
+              reason: "unknown",
+              provider: "claude-cli",
+              model: "opus",
+              status: 404,
+            }),
+          )
+          .mockRejectedValue(new Error("retry failed"));
+
+        await expect(agentCommand({ message: "hi", sessionKey }, runtime)).rejects.toThrow(
+          "retry failed",
+        );
+
+        expect(runCliAgentSpy).toHaveBeenCalledTimes(2);
+        const firstCall = runCliAgentSpy.mock.calls[0]?.[0] as
+          | { cliSessionId?: string }
+          | undefined;
+        const secondCall = runCliAgentSpy.mock.calls[1]?.[0] as
+          | { cliSessionId?: string }
+          | undefined;
+        expect(firstCall?.cliSessionId).toBe("stale-cli-session");
+        expect(secondCall?.cliSessionId).toBeUndefined();
+      });
+    } finally {
+      vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(() => false);
+    }
+  });
+
   it("rejects unknown agent overrides", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
