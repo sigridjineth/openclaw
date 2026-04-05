@@ -19,7 +19,7 @@ const CLI_IMAGE = isTruthyEnvValue(process.env.OPENCLAW_LIVE_CLI_BACKEND_IMAGE_P
 const CLI_RESUME = isTruthyEnvValue(process.env.OPENCLAW_LIVE_CLI_BACKEND_RESUME_PROBE);
 const describeLive = LIVE && CLI_LIVE ? describe : describe.skip;
 
-const DEFAULT_MODEL = "claude-cli/claude-sonnet-4-6";
+const DEFAULT_MODEL = "codex-cli/gpt-5.4";
 const DEFAULT_CLAUDE_ARGS = [
   "-p",
   "--output-format",
@@ -33,7 +33,7 @@ const DEFAULT_CODEX_ARGS = [
   "--color",
   "never",
   "--sandbox",
-  "read-only",
+  "workspace-write",
   "--skip-git-repo-check",
 ];
 const DEFAULT_CLEAR_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_OLD"];
@@ -188,7 +188,7 @@ describeLive("gateway live (cli backend)", () => {
     process.env.OPENCLAW_GATEWAY_TOKEN = token;
 
     const rawModel = process.env.OPENCLAW_LIVE_CLI_BACKEND_MODEL ?? DEFAULT_MODEL;
-    const parsed = parseModelRef(rawModel, "claude-cli");
+    const parsed = parseModelRef(rawModel, "codex-cli");
     if (!parsed) {
       throw new Error(
         `OPENCLAW_LIVE_CLI_BACKEND_MODEL must resolve to a CLI backend model. Got: ${rawModel}`,

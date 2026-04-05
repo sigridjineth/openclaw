@@ -2,7 +2,7 @@
 summary: "CLI backends: text-only fallback via local AI CLIs"
 read_when:
   - You want a reliable fallback when API providers fail
-  - You are running Claude Code CLI or other local AI CLIs and want to reuse them
+  - You are running Codex CLI, Claude Code CLI, or other local AI CLIs and want to reuse them
   - You need a text-only, tool-free path that still supports sessions and images
 title: "CLI Backends"
 ---
@@ -22,16 +22,16 @@ want “always works” text responses without relying on external APIs.
 
 ## Beginner-friendly quick start
 
-You can use Claude Code CLI **without any config** (OpenClaw ships a built-in default):
-
-```bash
-openclaw agent --message "hi" --model claude-cli/opus-4.6
-```
-
-Codex CLI also works out of the box:
+You can use Codex CLI **without any config** (OpenClaw ships a built-in default):
 
 ```bash
 openclaw agent --message "hi" --model codex-cli/gpt-5.4
+```
+
+Claude Code CLI also works out of the box:
+
+```bash
+openclaw agent --message "hi" --model claude-cli/opus-4.6
 ```
 
 If your gateway runs under launchd/systemd and PATH is minimal, add just the
@@ -42,8 +42,8 @@ command path:
   agents: {
     defaults: {
       cliBackends: {
-        "claude-cli": {
-          command: "/opt/homebrew/bin/claude",
+        "codex-cli": {
+          command: "/opt/homebrew/bin/codex",
         },
       },
     },
@@ -62,13 +62,12 @@ Add a CLI backend to your fallback list so it only runs when primary models fail
   agents: {
     defaults: {
       model: {
-        primary: "anthropic/claude-opus-4-6",
-        fallbacks: ["claude-cli/opus-4.6", "claude-cli/opus-4.5"],
+        primary: "openai-codex/gpt-5.4",
+        fallbacks: ["codex-cli/gpt-5.4"],
       },
       models: {
-        "anthropic/claude-opus-4-6": { alias: "Opus" },
-        "claude-cli/opus-4.6": {},
-        "claude-cli/opus-4.5": {},
+        "openai-codex/gpt-5.4": { alias: "Codex" },
+        "codex-cli/gpt-5.4": {},
       },
     },
   },
@@ -77,7 +76,7 @@ Add a CLI backend to your fallback list so it only runs when primary models fail
 
 Notes:
 
-- If you use `agents.defaults.models` (allowlist), you must include `claude-cli/...`.
+- If you use `agents.defaults.models` (allowlist), you must include `codex-cli/...`.
 - If the primary provider fails (auth, rate limits, timeouts), OpenClaw will
   try the CLI backend next.
 
@@ -89,7 +88,7 @@ All CLI backends live under:
 agents.defaults.cliBackends
 ```
 
-Each entry is keyed by a **provider id** (e.g. `claude-cli`, `my-cli`).
+Each entry is keyed by a **provider id** (e.g. `codex-cli`, `my-cli`).
 The provider id becomes the left side of your model ref:
 
 ```
@@ -134,7 +133,7 @@ The provider id becomes the left side of your model ref:
 
 ## How it works
 
-1. **Selects a backend** based on the provider prefix (`claude-cli/...`).
+1. **Selects a backend** based on the provider prefix (`codex-cli/...`).
 2. **Builds a system prompt** using the same OpenClaw prompt + workspace context.
 3. **Executes the CLI** with a session id (if supported) so history stays consistent.
 4. **Parses output** (JSON or plain text) and returns the final text.
@@ -182,7 +181,18 @@ Input modes:
 
 ## Defaults (built-in)
 
-OpenClaw ships a default for `claude-cli`:
+OpenClaw ships a default for `codex-cli`:
+
+- `command: "codex"`
+- `args: ["exec","--json","--color","never","--sandbox","workspace-write","--skip-git-repo-check"]`
+- `resumeArgs: ["exec","resume","{sessionId}","--color","never","--sandbox","workspace-write","--skip-git-repo-check"]`
+- `output: "jsonl"`
+- `resumeOutput: "text"`
+- `modelArg: "--model"`
+- `imageArg: "--image"`
+- `sessionMode: "existing"`
+
+OpenClaw also ships a default for `claude-cli`:
 
 - `command: "claude"`
 - `args: ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"]`
@@ -192,17 +202,6 @@ OpenClaw ships a default for `claude-cli`:
 - `sessionArg: "--session-id"`
 - `systemPromptWhen: "first"`
 - `sessionMode: "always"`
-
-OpenClaw also ships a default for `codex-cli`:
-
-- `command: "codex"`
-- `args: ["exec","--json","--color","never","--sandbox","read-only","--skip-git-repo-check"]`
-- `resumeArgs: ["exec","resume","{sessionId}","--color","never","--sandbox","read-only","--skip-git-repo-check"]`
-- `output: "jsonl"`
-- `resumeOutput: "text"`
-- `modelArg: "--model"`
-- `imageArg: "--image"`
-- `sessionMode: "existing"`
 
 Override only if needed (common: absolute `command` path).
 

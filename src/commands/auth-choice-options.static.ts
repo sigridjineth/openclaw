@@ -217,13 +217,13 @@ function buildProviderAuthChoiceOptions(): AuthChoiceOption[] {
 
 export const BASE_AUTH_CHOICE_OPTIONS: ReadonlyArray<AuthChoiceOption> = [
   {
+    value: "openai-codex",
+    label: "OpenAI Codex (ChatGPT OAuth)",
+  },
+  {
     value: "token",
     label: "Anthropic token (paste setup-token)",
     hint: "run `claude setup-token` elsewhere, then paste the token here",
-  },
-  {
-    value: "openai-codex",
-    label: "OpenAI Codex (ChatGPT OAuth)",
   },
   { value: "chutes", label: "Chutes (OAuth)" },
   ...buildProviderAuthChoiceOptions(),

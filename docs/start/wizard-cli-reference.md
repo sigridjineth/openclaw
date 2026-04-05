@@ -123,20 +123,6 @@ What you set:
 ## Auth and model options
 
 <AccordionGroup>
-  <Accordion title="Anthropic API key">
-    Uses `ANTHROPIC_API_KEY` if present or prompts for a key, then saves it for daemon use.
-  </Accordion>
-  <Accordion title="Anthropic OAuth (Claude Code CLI)">
-    - macOS: checks Keychain item "Claude Code-credentials"
-    - Linux and Windows: reuses `~/.claude/.credentials.json` if present
-
-    On macOS, choose "Always Allow" so launchd starts do not block.
-
-  </Accordion>
-  <Accordion title="Anthropic token (setup-token paste)">
-    Run `claude setup-token` on any machine, then paste the token.
-    You can name it; blank uses default.
-  </Accordion>
   <Accordion title="OpenAI Code subscription (Codex CLI reuse)">
     If `~/.codex/auth.json` exists, the wizard can reuse it.
   </Accordion>
@@ -151,6 +137,20 @@ What you set:
 
     Sets `agents.defaults.model` to `openai/gpt-5.1-codex` when model is unset, `openai/*`, or `openai-codex/*`.
 
+  </Accordion>
+  <Accordion title="Anthropic API key">
+    Uses `ANTHROPIC_API_KEY` if present or prompts for a key, then saves it for daemon use.
+  </Accordion>
+  <Accordion title="Anthropic OAuth (Claude Code CLI)">
+    - macOS: checks Keychain item "Claude Code-credentials"
+    - Linux and Windows: reuses `~/.claude/.credentials.json` if present
+
+    On macOS, choose "Always Allow" so launchd starts do not block.
+
+  </Accordion>
+  <Accordion title="Anthropic token (setup-token paste)">
+    Run `claude setup-token` on any machine, then paste the token.
+    You can name it; blank uses default.
   </Accordion>
   <Accordion title="xAI (Grok) API key">
     Prompts for `XAI_API_KEY` and configures xAI as a model provider.

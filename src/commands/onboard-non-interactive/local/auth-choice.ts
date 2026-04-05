@@ -143,7 +143,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     runtime.error(
       [
         `Auth choice "${authChoice}" is deprecated.`,
-        'Use "--auth-choice token" (Anthropic setup-token) or "--auth-choice openai-codex".',
+        'Use "--auth-choice openai-codex" or "--auth-choice token" (Anthropic setup-token).',
       ].join("\n"),
     );
     runtime.exit(1);
