@@ -2,10 +2,10 @@
 summary: 关于 OpenClaw 安装、配置和使用的常见问题
 title: 常见问题
 x-i18n:
-  generated_at: "2026-03-16T01:39:16Z"
-  model: claude-opus-4-5
+  generated_at: "2026-03-16T06:52:18Z"
+  model: claude-opus-4-6
   provider: pi
-  source_hash: 6e6a4a63fb73dca24dbe77928b51c6b2e5d51ec883fb36c64e2e40ef027050e9
+  source_hash: 94f7c6ea1024d5606379ce80d65a006b3acc12a963d57ca2333fcee3e5a31872
   source_path: help/faq.md
   workflow: 15
 ---
@@ -39,7 +39,7 @@ x-i18n:
   - [如何在 VPS 上安装 OpenClaw？](#how-do-i-install-openclaw-on-a-vps)
   - [云/VPS 安装指南在哪里？](#where-are-the-cloudvps-install-guides)
   - [可以让 OpenClaw 自行更新吗？](#can-i-ask-openclaw-to-update-itself)
-  - [新手引导向导具体做了什么？](#what-does-the-onboarding-wizard-actually-do)
+  - [新手引导具体做了什么？](#新手引导具体做了什么)
   - [运行 OpenClaw 需要 Claude 或 OpenAI 订阅吗？](#do-i-need-a-claude-or-openai-subscription-to-run-this)
   - [能否使用 Claude Max 订阅而不需要 API 密钥？](#can-i-use-claude-max-subscription-without-an-api-key)
   - [Anthropic "setup-token" 认证如何工作？](#how-does-anthropic-setuptoken-auth-work)
@@ -310,14 +310,14 @@ openclaw doctor
 
 ### 安装和设置 OpenClaw 的推荐方式是什么
 
-仓库推荐从源码运行并使用新手引导向导：
+仓库推荐从源码运行并使用新手引导：
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash
 openclaw onboard --install-daemon
 ```
 
-向导还可以自动构建 UI 资源。新手引导后，通常在端口 **18789** 上运行 Gateway 网关。
+新手引导还可以自动构建 UI 资源。新手引导后，通常在端口 **18789** 上运行 Gateway 网关。
 
 从源码安装（贡献者/开发者）：
 
@@ -334,7 +334,7 @@ openclaw onboard
 
 ### 新手引导后如何打开仪表板
 
-向导现在会在新手引导完成后立即使用带令牌的仪表板 URL 打开浏览器，并在摘要中打印完整链接（带令牌）。保持该标签页打开；如果没有自动启动，请在同一台机器上复制/粘贴打印的 URL。令牌保持在本地主机上——不会从浏览器获取任何内容。
+新手引导现在会在完成后立即使用带令牌的仪表板 URL 打开浏览器，并在摘要中打印完整链接（带令牌）。保持该标签页打开；如果没有自动启动，请在同一台机器上复制/粘贴打印的 URL。令牌保持在本地主机上，不会从浏览器获取任何内容。
 
 ### 如何在本地和远程环境中验证仪表板令牌
 
@@ -427,7 +427,7 @@ https://github.com/openclaw/openclaw/blob/main/CHANGELOG.md
 
 ### 无法访问 docs.openclaw.ai（SSL 错误），怎么办
 
-一些 Comcast/Xfinity 连接通过 Xfinity Advanced Security 错误地拦截了 `docs.openclaw.ai`。禁用该功能或将 `docs.openclaw.ai` 加入白名单，然后重试。更多详情：[故障排除](/help/troubleshooting#docsopenclawai-shows-an-ssl-error-comcastxfinity)。
+一些 Comcast/Xfinity 连接通过 Xfinity Advanced Security 错误地拦截了 `docs.openclaw.ai`。禁用该功能或将 `docs.openclaw.ai` 加入白名单，然后重试。
 请帮助我们在此处报告以解除封锁：https://spa.xfinity.com/check_url_status。
 
 如果仍然无法访问该网站，文档在 GitHub 上有镜像：
@@ -562,7 +562,7 @@ curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method git
 
 ### 如何在 Linux 上安装 OpenClaw
 
-简短回答：按照 Linux 指南操作，然后运行新手引导向导。
+简短回答：按照 Linux 指南操作，然后运行新手引导。
 
 - Linux 快速路径 + 服务安装：[Linux](/platforms/linux)。
 - 完整指南：[入门](/start/getting-started)。
@@ -614,7 +614,7 @@ openclaw gateway restart
 
 文档：[更新](/cli/update)、[更新指南](/install/updating)。
 
-### 新手引导向导具体做了什么
+### 新手引导具体做了什么
 
 `openclaw onboard` 是推荐的设置路径。在**本地模式**下，它引导你完成：
 
@@ -642,7 +642,7 @@ Claude Pro/Max 订阅**不包含 API 密钥**，因此这是订阅账户的正�
 
 ### Anthropic setup-token 认证如何工作
 
-`claude setup-token` 通过 Claude Code CLI 生成一个**令牌字符串**（在 Web 控制台中不可用）。你可以在**任何机器**上运行它。在向导中选择 **Anthropic token (paste setup-token)** 或使用 `openclaw models auth paste-token --provider anthropic` 粘贴。令牌作为 **anthropic** 提供商的认证配置文件存储，像 API 密钥一样使用（无自动刷新）。更多详情：[OAuth](/concepts/oauth)。
+`claude setup-token` 通过 Claude Code CLI 生成一个**令牌字符串**（在 Web 控制台中不可用）。你可以在**任何机器**上运行它。在新手引导中选择 **Anthropic token (paste setup-token)** 或使用 `openclaw models auth paste-token --provider anthropic` 粘贴。令牌作为 **anthropic** 提供商的认证配置文件存储，像 API 密钥一样使用（无自动刷新）。更多详情：[OAuth](/concepts/oauth)。
 
 ### 在哪里获取 Anthropic setup-token
 
@@ -652,7 +652,7 @@ Claude Pro/Max 订阅**不包含 API 密钥**，因此这是订阅账户的正�
 claude setup-token
 ```
 
-复制它打印的令牌，然后在向导中选择 **Anthropic token (paste setup-token)**。如果你想在 Gateway 网关主机上运行，使用 `openclaw models auth setup-token --provider anthropic`。如果你在其他地方运行了 `claude setup-token`，在 Gateway 网关主机上使用 `openclaw models auth paste-token --provider anthropic` 粘贴。参阅 [Anthropic](/providers/anthropic)。
+复制它打印的令牌，然后在新手引导中选择 **Anthropic token (paste setup-token)**。如果你想在 Gateway 网关主机上运行，使用 `openclaw models auth setup-token --provider anthropic`。如果你在其他地方运行了 `claude setup-token`，在 Gateway 网关主机上使用 `openclaw models auth paste-token --provider anthropic` 粘贴。参阅 [Anthropic](/providers/anthropic)。
 
 ### 是否支持 Claude 订阅认证（Claude Pro/Max）
 
@@ -673,13 +673,13 @@ claude setup-token
 
 ### Codex 认证如何工作
 
-OpenClaw 通过 OAuth（ChatGPT 登录）支持 **OpenAI Code (Codex)**。向导可以运行 OAuth 流程，并在适当时将默认模型设置为 `openai-codex/gpt-5.2`。参阅[模型提供商](/concepts/model-providers)和[向导](/start/wizard)。
+OpenClaw 通过 OAuth（ChatGPT 登录）支持 **OpenAI Code (Codex)**。新手引导可以运行 OAuth 流程，并在适当时将默认模型设置为 `openai-codex/gpt-5.4`。参阅[模型提供商](/concepts/model-providers)和[CLI 新手引导](/start/wizard)。
 
 ### 是否支持 OpenAI 订阅认证（Codex OAuth）
 
-是的。OpenClaw 完全支持 **OpenAI Code (Codex) 订阅 OAuth**。新手引导向导可以为你运行 OAuth 流程。
+是的。OpenClaw 完全支持 **OpenAI Code (Codex) 订阅 OAuth**。新手引导可以为你运行 OAuth 流程。
 
-参阅 [OAuth](/concepts/oauth)、[模型提供商](/concepts/model-providers)和[向导](/start/wizard)。
+参阅 [OAuth](/concepts/oauth)、[模型提供商](/concepts/model-providers)和[CLI 新手引导](/start/wizard)。
 
 ### 如何设置 Gemini CLI OAuth
 
@@ -1266,15 +1266,26 @@ Gateway 网关监视配置文件并支持热重载：
 
 ### 如何启用网络搜索（和网页抓取）
 
-`web_fetch` 无需 API 密钥即可工作。`web_search` 需要 Brave Search API 密钥。**推荐：** 运行 `openclaw configure --section web` 将其存储在 `tools.web.search.apiKey` 中。环境变量替代方案：为 Gateway 网关进程设置 `BRAVE_API_KEY`。
+`web_fetch` 无需 API 密钥即可工作。`web_search` 需要所选提供商的 API 密钥。**推荐：** 运行 `openclaw configure --section web`。新的提供商专属配置会存储在 `plugins.entries.<plugin>.config.webSearch.*` 下。环境变量替代方案：为 Gateway 网关进程设置相应的提供商环境变量。
 
 ```json5
 {
+  plugins: {
+    entries: {
+      brave: {
+        config: {
+          webSearch: {
+            apiKey: "BRAVE_API_KEY_HERE",
+          },
+        },
+      },
+    },
+  },
   tools: {
     web: {
       search: {
         enabled: true,
-        apiKey: "BRAVE_API_KEY_HERE",
+        provider: "brave",
         maxResults: 5,
       },
       fetch: {
@@ -1290,6 +1301,7 @@ Gateway 网关监视配置文件并支持热重载：
 - 如果你使用允许列表，添加 `web_search`/`web_fetch` 或 `group:web`。
 - `web_fetch` 默认启用（除非明确禁用）。
 - 守护进程从 `~/.openclaw/.env`（或服务环境）读取环境变量。
+- 旧的 `tools.web.search.*` 提供商路径仍通过兼容层继续生效，但不应再用于新配置。
 
 文档：[Web 工具](/tools/web)。
 
@@ -1632,7 +1644,7 @@ openclaw onboard --install-daemon
 
 注意：
 
-- 新手引导向导在看到现有配置时也提供**重置**选项。参阅[向导](/start/wizard)。
+- 新手引导在看到现有配置时也提供**重置**选项。参阅[CLI 新手引导](/start/wizard)。
 - 如果你使用了配置文件（`--profile` / `OPENCLAW_PROFILE`），重置每个状态目录（默认为 `~/.openclaw-<profile>`）。
 - 开发重置：`openclaw gateway --dev --reset`（仅限开发；清除开发配置 + 凭据 + 会话 + 工作区）。
 
@@ -1777,13 +1789,13 @@ OpenClaw 的默认模型是你设置的：
 agents.defaults.model.primary
 ```
 
-模型以 `provider/model` 引用（示例：`anthropic/claude-opus-4-5`）。如果你省略提供商，OpenClaw 目前假设 `anthropic` 作为临时弃用回退——但你仍然应该**明确**设置 `provider/model`。
+模型以 `provider/model` 引用（示例：`anthropic/claude-opus-4-6`）。如果你省略提供商，OpenClaw 目前假设 `anthropic` 作为临时弃用回退——但你仍然应该**明确**设置 `provider/model`。
 
 ### 推荐什么模型
 
-**推荐默认：** `anthropic/claude-opus-4-5`。
-**好的替代：** `anthropic/claude-sonnet-4-5`。
-**可靠（个性较少）：** `openai/gpt-5.2`——几乎和 Opus 一样好，只是个性较少。
+**推荐默认：** `anthropic/claude-opus-4-6`。
+**好的替代：** `anthropic/claude-sonnet-4-6`。
+**可靠（个性较少）：** `openai/gpt-5.4`——几乎和 Opus 一样好，只是个性较少。
 **经济：** `zai/glm-4.7`。
 
 MiniMax M2.1 有自己的文档：[MiniMax](/providers/minimax) 和
@@ -1822,7 +1834,7 @@ MiniMax M2.1 有自己的文档：[MiniMax](/providers/minimax) 和
 
 ### OpenClaw、Flawd 和 Krill 使用什么模型
 
-- **OpenClaw + Flawd：** Anthropic Opus（`anthropic/claude-opus-4-5`）——参阅 [Anthropic](/providers/anthropic)。
+- **OpenClaw + Flawd：** Anthropic Opus（`anthropic/claude-opus-4-6`）——参阅 [Anthropic](/providers/anthropic)。
 - **Krill：** MiniMax M2.1（`minimax/MiniMax-M2.1`）——参阅 [MiniMax](/providers/minimax)。
 
 ### 如何在运行中切换模型（无需重启）
@@ -1862,7 +1874,7 @@ MiniMax M2.1 有自己的文档：[MiniMax](/providers/minimax) 和
 重新运行 `/model` 但**不带** `@profile` 后缀：
 
 ```
-/model anthropic/claude-opus-4-5
+/model anthropic/claude-opus-4-6
 ```
 
 如果你想返回默认值，从 `/model` 中选择（或发送 `/model <default provider/model>`）。
@@ -1872,8 +1884,8 @@ MiniMax M2.1 有自己的文档：[MiniMax](/providers/minimax) 和
 
 可以。设置一个为默认并按需切换：
 
-- **快速切换（按会话）：** 日常任务用 `/model gpt-5.2`，编程用 `/model gpt-5.2-codex`。
-- **默认 + 切换：** 将 `agents.defaults.model.primary` 设置为 `openai-codex/gpt-5.2`，然后编程时切换到 `openai-codex/gpt-5.2-codex`（或反过来）。
+- **快速切换（按会话）：** 日常任务用 `/model gpt-5.4`，编程用 `/model gpt-5.4`。
+- **默认 + 切换：** 将 `agents.defaults.model.primary` 设置为 `openai-codex/gpt-5.4`，然后编程时切换到 `openai-codex/gpt-5.4-codex`（或反过来）。
 - **子智能体：** 将编程任务路由到具有不同默认模型的子智能体。
 
 参阅[模型](/concepts/models)和[斜杠命令](/tools/slash-commands)。
@@ -1919,7 +1931,7 @@ Model "provider/model" is not allowed. Use /model to list available models.
       model: { primary: "minimax/MiniMax-M2.1" },
       models: {
         "minimax/MiniMax-M2.1": { alias: "minimax" },
-        "openai/gpt-5.2": { alias: "gpt" },
+        "openai/gpt-5.4": { alias: "gpt" },
       },
     },
   },
@@ -1944,10 +1956,10 @@ Model "provider/model" is not allowed. Use /model to list available models.
 
 是的。OpenClaw 内置了一些默认简写（仅在模型存在于 `agents.defaults.models` 中时应用）：
 
-- `opus` → `anthropic/claude-opus-4-5`
-- `sonnet` → `anthropic/claude-sonnet-4-5`
-- `gpt` → `openai/gpt-5.2`
-- `gpt-mini` → `openai/gpt-5-mini`
+- `opus` → `anthropic/claude-opus-4-6`
+- `sonnet` → `anthropic/claude-sonnet-4-6`
+- `gpt` → `openai/gpt-5.4`
+- `gpt-mini` → `openai/gpt-5.4-mini`
 - `gemini` → `google/gemini-3-pro-preview`
 - `gemini-flash` → `google/gemini-3-flash-preview`
 
@@ -1961,10 +1973,10 @@ Model "provider/model" is not allowed. Use /model to list available models.
 {
   agents: {
     defaults: {
-      model: { primary: "anthropic/claude-opus-4-5" },
+      model: { primary: "anthropic/claude-opus-4-6" },
       models: {
-        "anthropic/claude-opus-4-5": { alias: "opus" },
-        "anthropic/claude-sonnet-4-5": { alias: "sonnet" },
+        "anthropic/claude-opus-4-6": { alias: "opus" },
+        "anthropic/claude-sonnet-4-6": { alias: "sonnet" },
         "anthropic/claude-haiku-4-5": { alias: "haiku" },
       },
     },
@@ -1982,8 +1994,8 @@ OpenRouter（按令牌付费；多种模型）：
 {
   agents: {
     defaults: {
-      model: { primary: "openrouter/anthropic/claude-sonnet-4-5" },
-      models: { "openrouter/anthropic/claude-sonnet-4-5": {} },
+      model: { primary: "openrouter/anthropic/claude-sonnet-4-6" },
+      models: { "openrouter/anthropic/claude-sonnet-4-6": {} },
     },
   },
   env: { OPENROUTER_API_KEY: "sk-or-..." },
@@ -2621,7 +2633,7 @@ OpenClaw 默认阻止**跨提供商**消息。如果工具调用绑定到 Telegr
 
 **问：“使用 API 密钥时 Anthropic 的默认模型是什么？”**
 
-**答：** 在 OpenClaw 中，凭据和模型选择是分开的。设置 `ANTHROPIC_API_KEY`（或在认证配置文件中存储 Anthropic API 密钥）启用认证，但实际的默认模型是你在 `agents.defaults.model.primary` 中配置的（例如 `anthropic/claude-sonnet-4-5` 或 `anthropic/claude-opus-4-5`）。如果你看到 `No credentials found for profile "anthropic:default"`，意味着 Gateway 网关在正在运行的智能体的预期 `auth-profiles.json` 中找不到 Anthropic 凭据。
+**答：** 在 OpenClaw 中，凭据和模型选择是分开的。设置 `ANTHROPIC_API_KEY`（或在认证配置文件中存储 Anthropic API 密钥）启用认证，但实际的默认模型是你在 `agents.defaults.model.primary` 中配置的（例如 `anthropic/claude-sonnet-4-6` 或 `anthropic/claude-opus-4-6`）。如果你看到 `No credentials found for profile "anthropic:default"`，意味着 Gateway 网关在正在运行的智能体的预期 `auth-profiles.json` 中找不到 Anthropic 凭据。
 
 ---
 

@@ -1,26 +1,15 @@
 import fs from "node:fs";
-import path from "node:path";
+import os from "node:os";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveOAuthDir } from "../config/paths.js";
-import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
+import { resolveStateDir } from "../config/paths.js";
+import { listBundledChannelPluginIds } from "./plugins/bundled-ids.js";
+import { listBundledChannelPlugins } from "./plugins/bundled.js";
 
 const IGNORED_CHANNEL_CONFIG_KEYS = new Set(["defaults", "modelByChannel"]);
 
-const CHANNEL_ENV_PREFIXES = [
-  "BLUEBUBBLES_",
-  "DISCORD_",
-  "GOOGLECHAT_",
-  "IRC_",
-  "LINE_",
-  "MATRIX_",
-  "MSTEAMS_",
-  "SIGNAL_",
-  "SLACK_",
-  "TELEGRAM_",
-  "WHATSAPP_",
-  "ZALOUSER_",
-  "ZALO_",
-] as const;
+type ChannelPresenceOptions = {
+  includePersistedAuthState?: boolean;
+};
 
 function hasNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -30,65 +19,102 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function recordHasKeys(value: unknown): boolean {
-  return isRecord(value) && Object.keys(value).length > 0;
-}
-
-function hasWhatsAppAuthState(env: NodeJS.ProcessEnv): boolean {
-  try {
-    const oauthDir = resolveOAuthDir(env);
-    const legacyCreds = path.join(oauthDir, "creds.json");
-    if (fs.existsSync(legacyCreds)) {
-      return true;
-    }
-
-    const accountsRoot = path.join(oauthDir, "whatsapp");
-    const defaultCreds = path.join(accountsRoot, DEFAULT_ACCOUNT_ID, "creds.json");
-    if (fs.existsSync(defaultCreds)) {
-      return true;
-    }
-
-    const entries = fs.readdirSync(accountsRoot, { withFileTypes: true });
-    return entries.some((entry) => {
-      if (!entry.isDirectory()) {
-        return false;
-      }
-      return fs.existsSync(path.join(accountsRoot, entry.name, "creds.json"));
-    });
-  } catch {
+export function hasMeaningfulChannelConfig(value: unknown): boolean {
+  if (!isRecord(value)) {
     return false;
   }
+  return Object.keys(value).some((key) => key !== "enabled");
 }
 
-function hasEnvConfiguredChannel(env: NodeJS.ProcessEnv): boolean {
-  for (const [key, value] of Object.entries(env)) {
-    if (!hasNonEmptyString(value)) {
-      continue;
-    }
-    if (
-      CHANNEL_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
-      key === "TELEGRAM_BOT_TOKEN"
-    ) {
-      return true;
-    }
-  }
-  return hasWhatsAppAuthState(env);
+function listConfiguredChannelEnvPrefixes(): Array<[prefix: string, channelId: string]> {
+  return listBundledChannelPluginIds().map((channelId) => [
+    `${channelId.replace(/[^a-z0-9]+/gi, "_").toUpperCase()}_`,
+    channelId,
+  ]);
 }
 
-export function hasPotentialConfiguredChannels(
+function hasPersistedChannelState(env: NodeJS.ProcessEnv): boolean {
+  return fs.existsSync(resolveStateDir(env, os.homedir));
+}
+
+export function listPotentialConfiguredChannelIds(
   cfg: OpenClawConfig,
   env: NodeJS.ProcessEnv = process.env,
-): boolean {
+  options: ChannelPresenceOptions = {},
+): string[] {
+  const configuredChannelIds = new Set<string>();
+  const channelEnvPrefixes = listConfiguredChannelEnvPrefixes();
   const channels = isRecord(cfg.channels) ? cfg.channels : null;
   if (channels) {
     for (const [key, value] of Object.entries(channels)) {
       if (IGNORED_CHANNEL_CONFIG_KEYS.has(key)) {
         continue;
       }
-      if (recordHasKeys(value)) {
+      if (hasMeaningfulChannelConfig(value)) {
+        configuredChannelIds.add(key);
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (!hasNonEmptyString(value)) {
+      continue;
+    }
+    for (const [prefix, channelId] of channelEnvPrefixes) {
+      if (key.startsWith(prefix)) {
+        configuredChannelIds.add(channelId);
+      }
+    }
+  }
+
+  if (options.includePersistedAuthState !== false && hasPersistedChannelState(env)) {
+    for (const plugin of listBundledChannelPlugins()) {
+      if (plugin.config?.hasPersistedAuthState?.({ cfg, env })) {
+        configuredChannelIds.add(plugin.id);
+      }
+    }
+  }
+
+  return [...configuredChannelIds];
+}
+
+function hasEnvConfiguredChannel(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv,
+  options: ChannelPresenceOptions = {},
+): boolean {
+  const channelEnvPrefixes = listConfiguredChannelEnvPrefixes();
+  for (const [key, value] of Object.entries(env)) {
+    if (!hasNonEmptyString(value)) {
+      continue;
+    }
+    if (channelEnvPrefixes.some(([prefix]) => key.startsWith(prefix))) {
+      return true;
+    }
+  }
+  if (options.includePersistedAuthState === false || !hasPersistedChannelState(env)) {
+    return false;
+  }
+  return listBundledChannelPlugins().some((plugin) =>
+    Boolean(plugin.config?.hasPersistedAuthState?.({ cfg, env })),
+  );
+}
+
+export function hasPotentialConfiguredChannels(
+  cfg: OpenClawConfig | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ChannelPresenceOptions = {},
+): boolean {
+  const channels = isRecord(cfg?.channels) ? cfg.channels : null;
+  if (channels) {
+    for (const [key, value] of Object.entries(channels)) {
+      if (IGNORED_CHANNEL_CONFIG_KEYS.has(key)) {
+        continue;
+      }
+      if (hasMeaningfulChannelConfig(value)) {
         return true;
       }
     }
   }
-  return hasEnvConfiguredChannel(env);
+  return hasEnvConfiguredChannel(cfg ?? {}, env, options);
 }

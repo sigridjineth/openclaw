@@ -42,6 +42,10 @@ openclaw devices list
 openclaw devices approve <requestId>
 ```
 
+If the app retries pairing with changed auth details (role/scopes/public key),
+the previous pending request is superseded and a new `requestId` is created.
+Run `openclaw devices list` again before approval.
+
 4. Verify connection:
 
 ```bash
@@ -161,11 +165,14 @@ export OPENCLAW_APNS_PRIVATE_KEY_P8="$(cat /path/to/AuthKey_KEYID.p8)"
 
 ### Bonjour (LAN)
 
-The Gateway advertises `_openclaw-gw._tcp` on `local.`. The iOS app lists these automatically.
+The iOS app browses `_openclaw-gw._tcp` on `local.` and, when configured, the same
+wide-area DNS-SD discovery domain. Same-LAN gateways appear automatically from `local.`;
+cross-network discovery can use the configured wide-area domain without changing the beacon type.
 
 ### Tailnet (cross-network)
 
-If mDNS is blocked, use a unicast DNS-SD zone (choose a domain; example: `openclaw.internal.`) and Tailscale split DNS.
+If mDNS is blocked, use a unicast DNS-SD zone (choose a domain; example:
+`openclaw.internal.`) and Tailscale split DNS.
 See [Bonjour](/gateway/bonjour) for the CoreDNS example.
 
 ### Manual host/port

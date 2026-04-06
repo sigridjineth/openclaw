@@ -7,7 +7,7 @@ import type { TtsAutoMode } from "../types.tts.js";
 
 export type SessionScope = "per-sender" | "global";
 
-export type SessionChannelId = ChannelId | "webchat";
+export type SessionChannelId = ChannelId;
 
 export type SessionChatType = ChatType;
 
@@ -65,6 +65,14 @@ export type AcpSessionRuntimeOptions = {
   backendExtras?: Record<string, string>;
 };
 
+export type CliSessionBinding = {
+  sessionId: string;
+  authProfileId?: string;
+  authEpoch?: string;
+  extraSystemPromptHash?: string;
+  mcpConfigHash?: string;
+};
+
 export type SessionEntry = {
   /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
@@ -73,6 +81,8 @@ export type SessionEntry = {
   lastHeartbeatText?: string;
   /** Timestamp (ms) when lastHeartbeatText was delivered. */
   lastHeartbeatSentAt?: number;
+  /** Heartbeat task state (task name -> last run timestamp ms). */
+  heartbeatTaskState?: Record<string, number>;
   sessionId: string;
   updatedAt: number;
   sessionFile?: string;
@@ -80,6 +90,8 @@ export type SessionEntry = {
   spawnedBy?: string;
   /** Workspace inherited by spawned sessions and reused on later turns for the same child session. */
   spawnedWorkspaceDir?: string;
+  /** Explicit parent session linkage for dashboard-created child sessions. */
+  parentSessionKey?: string;
   /** True after a thread/topic session has been forked from its parent transcript once. */
   forkedFromParent?: boolean;
   /** Subagent spawn depth (0 = main, 1 = sub-agent, 2 = sub-sub-agent). */
@@ -90,6 +102,14 @@ export type SessionEntry = {
   subagentControlScope?: "children" | "none";
   systemSent?: boolean;
   abortedLastRun?: boolean;
+  /** Stable first-run start time for subagent sessions, persisted after completion. */
+  startedAt?: number;
+  /** Latest completed run end time for subagent sessions, persisted after completion. */
+  endedAt?: number;
+  /** Accumulated runtime across subagent follow-up runs, persisted after completion. */
+  runtimeMs?: number;
+  /** Final persisted subagent run status, used after in-memory run archival. */
+  status?: "running" | "done" | "failed" | "killed" | "timeout";
   /**
    * Session-level stop cutoff captured when /stop is received.
    * Messages at/before this boundary are skipped to avoid replaying
@@ -115,6 +135,14 @@ export type SessionEntry = {
   authProfileOverride?: string;
   authProfileOverrideSource?: "auto" | "user";
   authProfileOverrideCompactionCount?: number;
+  /**
+   * Set on explicit user-driven session model changes (for example `/model`
+   * and `sessions.patch`) during an active run. The embedded runner checks
+   * this flag to decide whether to throw `LiveSessionModelSwitchError`.
+   * System-initiated fallbacks (rate-limit retry rotation) never set this
+   * flag, so they are never mistaken for user-initiated switches.
+   */
+  liveModelSwitchPending?: boolean;
   groupActivation?: "mention" | "always";
   groupActivationNeedsSystemIntro?: boolean;
   sendPolicy?: "allow" | "deny";
@@ -138,6 +166,7 @@ export type SessionEntry = {
    * totalTokens as stale/unknown for context-utilization displays.
    */
   totalTokensFresh?: boolean;
+  estimatedCostUsd?: number;
   cacheRead?: number;
   cacheWrite?: number;
   modelProvider?: string;
@@ -153,7 +182,9 @@ export type SessionEntry = {
   compactionCount?: number;
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
+  memoryFlushContextHash?: string;
   cliSessionIds?: Record<string, string>;
+  cliSessionBindings?: Record<string, CliSessionBinding>;
   claudeCliSessionId?: string;
   label?: string;
   displayName?: string;
@@ -379,4 +410,4 @@ export type SessionSystemPromptReport = {
 
 export const DEFAULT_RESET_TRIGGER = "/new";
 export const DEFAULT_RESET_TRIGGERS = ["/new", "/reset"];
-export const DEFAULT_IDLE_MINUTES = 60;
+export const DEFAULT_IDLE_MINUTES = 0;

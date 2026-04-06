@@ -2,10 +2,14 @@ import type { ToolLoopDetectionConfig } from "../config/types.tools.js";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import { deriveSessionChatType } from "../sessions/session-key-utils.js";
+import { copyPluginToolMeta } from "../plugins/tools.js";
+import { PluginApprovalResolutions, type PluginApprovalResolution } from "../plugins/types.js";
+import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
 import { isPlainObject } from "../utils.js";
+import { copyChannelAgentToolMeta } from "./channel-tools.js";
 import { normalizeToolName } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
+import { callGatewayTool } from "./tools/gateway.js";
 
 export type HookContext = {
   agentId?: string;
@@ -20,37 +24,56 @@ type HookOutcome = { blocked: true; reason: string } | { blocked: false; params:
 
 const log = createSubsystemLogger("agents/tools");
 const BEFORE_TOOL_CALL_WRAPPED = Symbol("beforeToolCallWrapped");
+const BEFORE_TOOL_CALL_HOOK_FAILURE_REASON =
+  "Tool call blocked because before_tool_call hook failed";
 const adjustedParamsByToolCallId = new Map<string, unknown>();
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 const LOOP_WARNING_BUCKET_SIZE = 10;
 const MAX_LOOP_WARNING_KEYS = 256;
-const SHELL_SEGMENT_SPLIT_RE = /&&|\|\||;|\||\n/;
-const LIVE_CHAT_MAX_EXEC_TIMEOUT_SECONDS = 60;
-const LIVE_CHAT_DELAY_SEGMENT_PATTERNS = [
-  /\bsleep\s+\d+(?:\.\d+)?\b/,
-  /\btail\s+-f\b/,
-  /\bwatch\b/,
-  /\bwhile\s+true\b/,
-] as const;
-const LEADING_EXEC_PREFIX_PATTERNS = [
-  /^(?:sudo|command|builtin|exec|nohup)\s+/,
-  /^timeout\s+\S+\s+/,
-  /^env\s+(?:[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/i,
-] as const;
-let beforeToolCallRuntimePromise: Promise<
-  typeof import("./pi-tools.before-tool-call.runtime.js")
-> | null = null;
 
-function loadBeforeToolCallRuntime() {
-  beforeToolCallRuntimePromise ??= import("./pi-tools.before-tool-call.runtime.js");
-  return beforeToolCallRuntimePromise;
-}
+const loadBeforeToolCallRuntime = createLazyRuntimeSurface(
+  () => import("./pi-tools.before-tool-call.runtime.js"),
+  ({ beforeToolCallRuntime }) => beforeToolCallRuntime,
+);
 
 function buildAdjustedParamsKey(params: { runId?: string; toolCallId: string }): string {
   if (params.runId && params.runId.trim()) {
     return `${params.runId}:${params.toolCallId}`;
   }
   return params.toolCallId;
+}
+
+function mergeParamsWithApprovalOverrides(
+  originalParams: unknown,
+  approvalParams?: unknown,
+): unknown {
+  if (approvalParams && isPlainObject(approvalParams)) {
+    if (isPlainObject(originalParams)) {
+      return { ...originalParams, ...approvalParams };
+    }
+    return approvalParams;
+  }
+  return originalParams;
+}
+
+function isAbortSignalCancellation(err: unknown, signal?: AbortSignal): boolean {
+  if (!signal?.aborted) {
+    return false;
+  }
+  if (err === signal.reason) {
+    return true;
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return true;
+  }
+  return false;
+}
+
+function unwrapErrorCause(err: unknown): unknown {
+  if (err instanceof Error && err.cause !== undefined) {
+    return err.cause;
+  }
+  return err;
 }
 
 function shouldEmitLoopWarning(state: SessionState, warningKey: string, count: number): boolean {
@@ -70,153 +93,6 @@ function shouldEmitLoopWarning(state: SessionState, warningKey: string, count: n
     }
   }
   return true;
-}
-
-function extractExecCommand(params: unknown): string | undefined {
-  if (!isPlainObject(params)) {
-    return undefined;
-  }
-  const command =
-    typeof params.command === "string"
-      ? params.command
-      : typeof params.cmd === "string"
-        ? params.cmd
-        : undefined;
-  const trimmed = command?.trim();
-  return trimmed || undefined;
-}
-
-function extractToolTimeoutSeconds(params: unknown): number | undefined {
-  if (!isPlainObject(params)) {
-    return undefined;
-  }
-  const timeout =
-    typeof params.timeout === "number"
-      ? params.timeout
-      : typeof params.timeout === "string"
-        ? Number(params.timeout)
-        : undefined;
-  if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) {
-    return timeout;
-  }
-  const timeoutMs =
-    typeof params.timeoutMs === "number"
-      ? params.timeoutMs
-      : typeof params.timeoutMs === "string"
-        ? Number(params.timeoutMs)
-        : undefined;
-  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    return timeoutMs / 1000;
-  }
-  return undefined;
-}
-
-function normalizeShellSegment(segment: string): string {
-  let normalized = segment.trim().toLowerCase();
-  let changed = true;
-  while (changed && normalized) {
-    changed = false;
-    for (const pattern of LEADING_EXEC_PREFIX_PATTERNS) {
-      const next = normalized.replace(pattern, "");
-      if (next !== normalized) {
-        normalized = next.trimStart();
-        changed = true;
-      }
-    }
-  }
-  return normalized;
-}
-
-function isGatewayLifecycleSegment(segment: string): boolean {
-  const normalized = normalizeShellSegment(segment);
-  if (!normalized) {
-    return false;
-  }
-  return (
-    /^(?:pnpm\s+openclaw|npx\s+openclaw|openclaw)\s+gateway\s+(?:restart|run|start|stop)\b/.test(
-      normalized,
-    ) ||
-    /^node\s+\S+\s+gateway\s+(?:restart|run|start|stop)\b/.test(normalized) ||
-    /^(?:pkill|killall)\b[\s\S]*\bopenclaw-gateway\b/.test(normalized)
-  );
-}
-
-function resolveGatewayLifecycleExecBlockReason(args: {
-  toolName: string;
-  params: unknown;
-  ctx?: HookContext;
-}): string | undefined {
-  if (normalizeToolName(args.toolName || "tool") !== "exec") {
-    return undefined;
-  }
-  const sessionKey = args.ctx?.sessionKey?.trim();
-  if (!sessionKey || deriveSessionChatType(sessionKey) === "unknown") {
-    return undefined;
-  }
-  const command = extractExecCommand(args.params);
-  if (!command) {
-    return undefined;
-  }
-  const blocksGatewayLifecycle = command
-    .split(SHELL_SEGMENT_SPLIT_RE)
-    .some((segment) => isGatewayLifecycleSegment(segment));
-  if (!blocksGatewayLifecycle) {
-    return undefined;
-  }
-  return (
-    "Do not manage the OpenClaw gateway from a live chat session via exec. " +
-    "It can interrupt the current reply mid-turn. Use a control shell or a non-chat session instead."
-  );
-}
-
-function resolveLiveChatAutomationBlockReason(args: {
-  toolName: string;
-  params: unknown;
-  ctx?: HookContext;
-}): string | undefined {
-  const sessionKey = args.ctx?.sessionKey?.trim();
-  if (!sessionKey || deriveSessionChatType(sessionKey) === "unknown") {
-    return undefined;
-  }
-  const toolName = normalizeToolName(args.toolName || "tool");
-  if (toolName === "process" && isPlainObject(args.params)) {
-    const action = typeof args.params.action === "string" ? args.params.action.trim() : "";
-    if (action === "poll" || action === "log" || action === "write") {
-      return (
-        "Do not poll or stream long-running background work from a live chat session. " +
-        "It can stall the reply path. Use a control shell or a non-chat session instead."
-      );
-    }
-    return undefined;
-  }
-  if (toolName !== "exec") {
-    return undefined;
-  }
-  const command = extractExecCommand(args.params);
-  if (!command) {
-    return undefined;
-  }
-  const timeoutSeconds = extractToolTimeoutSeconds(args.params);
-  if (typeof timeoutSeconds === "number" && timeoutSeconds > LIVE_CHAT_MAX_EXEC_TIMEOUT_SECONDS) {
-    return (
-      "Do not run long-lived terminal automation from a live chat session via exec. " +
-      "It can stall the reply path. Use a control shell or a non-chat session instead."
-    );
-  }
-  const hasDelayPattern = command
-    .split(SHELL_SEGMENT_SPLIT_RE)
-    .some((segment) =>
-      LIVE_CHAT_DELAY_SEGMENT_PATTERNS.some((pattern) =>
-        pattern.test(normalizeShellSegment(segment)),
-      ),
-    );
-  if (hasDelayPattern) {
-    return (
-      "Do not run delayed or watch-style terminal automation from a live chat session via exec. " +
-      "It can stall the reply path. Use a control shell or a non-chat session instead."
-    );
-  }
-  return undefined;
 }
 
 async function recordLoopOutcome(args: {
@@ -254,31 +130,10 @@ export async function runBeforeToolCallHook(args: {
   params: unknown;
   toolCallId?: string;
   ctx?: HookContext;
+  signal?: AbortSignal;
 }): Promise<HookOutcome> {
   const toolName = normalizeToolName(args.toolName || "tool");
   const params = args.params;
-  const gatewayLifecycleBlockReason = resolveGatewayLifecycleExecBlockReason({
-    toolName,
-    params,
-    ctx: args.ctx,
-  });
-  if (gatewayLifecycleBlockReason) {
-    return {
-      blocked: true,
-      reason: gatewayLifecycleBlockReason,
-    };
-  }
-  const liveChatAutomationBlockReason = resolveLiveChatAutomationBlockReason({
-    toolName,
-    params,
-    ctx: args.ctx,
-  });
-  if (liveChatAutomationBlockReason) {
-    return {
-      blocked: true,
-      reason: liveChatAutomationBlockReason,
-    };
-  }
 
   if (args.ctx?.sessionKey) {
     const { getDiagnosticSessionState, logToolLoopAction, detectToolCallLoop, recordToolCall } =
@@ -339,18 +194,18 @@ export async function runBeforeToolCallHook(args: {
     const normalizedParams = isPlainObject(params) ? params : {};
     const toolContext = {
       toolName,
-      ...(args.ctx?.agentId ? { agentId: args.ctx.agentId } : {}),
-      ...(args.ctx?.sessionKey ? { sessionKey: args.ctx.sessionKey } : {}),
-      ...(args.ctx?.sessionId ? { sessionId: args.ctx.sessionId } : {}),
-      ...(args.ctx?.runId ? { runId: args.ctx.runId } : {}),
-      ...(args.toolCallId ? { toolCallId: args.toolCallId } : {}),
+      ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
+      ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
+      ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),
+      ...(args.ctx?.runId && { runId: args.ctx.runId }),
+      ...(args.toolCallId && { toolCallId: args.toolCallId }),
     };
     const hookResult = await hookRunner.runBeforeToolCall(
       {
         toolName,
         params: normalizedParams,
-        ...(args.ctx?.runId ? { runId: args.ctx.runId } : {}),
-        ...(args.toolCallId ? { toolCallId: args.toolCallId } : {}),
+        ...(args.ctx?.runId && { runId: args.ctx.runId }),
+        ...(args.toolCallId && { toolCallId: args.toolCallId }),
       },
       toolContext,
     );
@@ -362,15 +217,161 @@ export async function runBeforeToolCallHook(args: {
       };
     }
 
-    if (hookResult?.params && isPlainObject(hookResult.params)) {
-      if (isPlainObject(params)) {
-        return { blocked: false, params: { ...params, ...hookResult.params } };
+    if (hookResult?.requireApproval) {
+      const approval = hookResult.requireApproval;
+      const safeOnResolution = (resolution: PluginApprovalResolution): void => {
+        const onResolution = approval.onResolution;
+        if (typeof onResolution !== "function") {
+          return;
+        }
+        try {
+          void Promise.resolve(onResolution(resolution)).catch((err) => {
+            log.warn(`plugin onResolution callback failed: ${String(err)}`);
+          });
+        } catch (err) {
+          log.warn(`plugin onResolution callback failed: ${String(err)}`);
+        }
+      };
+      try {
+        const requestResult = await callGatewayTool<{
+          id?: string;
+          status?: string;
+          decision?: string | null;
+        }>(
+          "plugin.approval.request",
+          // Buffer beyond the approval timeout so the gateway can clean up
+          // and respond before the client-side RPC timeout fires.
+          { timeoutMs: (approval.timeoutMs ?? 120_000) + 10_000 },
+          {
+            pluginId: approval.pluginId,
+            title: approval.title,
+            description: approval.description,
+            severity: approval.severity,
+            toolName,
+            toolCallId: args.toolCallId,
+            agentId: args.ctx?.agentId,
+            sessionKey: args.ctx?.sessionKey,
+            timeoutMs: approval.timeoutMs ?? 120_000,
+            twoPhase: true,
+          },
+          { expectFinal: false },
+        );
+        const id = requestResult?.id;
+        if (!id) {
+          safeOnResolution(PluginApprovalResolutions.CANCELLED);
+          return {
+            blocked: true,
+            reason: approval.description || "Plugin approval request failed",
+          };
+        }
+        const hasImmediateDecision = Object.prototype.hasOwnProperty.call(
+          requestResult ?? {},
+          "decision",
+        );
+        let decision: string | null | undefined;
+        if (hasImmediateDecision) {
+          decision = requestResult?.decision;
+          if (decision === null) {
+            safeOnResolution(PluginApprovalResolutions.CANCELLED);
+            return {
+              blocked: true,
+              reason: "Plugin approval unavailable (no approval route)",
+            };
+          }
+        } else {
+          // Wait for the decision, but abort early if the agent run is cancelled
+          // so the user isn't blocked for the full approval timeout.
+          const waitPromise = callGatewayTool<{
+            id?: string;
+            decision?: string | null;
+          }>(
+            "plugin.approval.waitDecision",
+            // Buffer beyond the approval timeout so the gateway can clean up
+            // and respond before the client-side RPC timeout fires.
+            { timeoutMs: (approval.timeoutMs ?? 120_000) + 10_000 },
+            { id },
+          );
+          let waitResult: { id?: string; decision?: string | null } | undefined;
+          if (args.signal) {
+            let onAbort: (() => void) | undefined;
+            const abortPromise = new Promise<never>((_, reject) => {
+              if (args.signal!.aborted) {
+                reject(args.signal!.reason);
+                return;
+              }
+              onAbort = () => reject(args.signal!.reason);
+              args.signal!.addEventListener("abort", onAbort, { once: true });
+            });
+            try {
+              waitResult = await Promise.race([waitPromise, abortPromise]);
+            } finally {
+              if (onAbort) {
+                args.signal.removeEventListener("abort", onAbort);
+              }
+            }
+          } else {
+            waitResult = await waitPromise;
+          }
+          decision = waitResult?.decision;
+        }
+        const resolution: PluginApprovalResolution =
+          decision === PluginApprovalResolutions.ALLOW_ONCE ||
+          decision === PluginApprovalResolutions.ALLOW_ALWAYS ||
+          decision === PluginApprovalResolutions.DENY
+            ? decision
+            : PluginApprovalResolutions.TIMEOUT;
+        safeOnResolution(resolution);
+        if (
+          decision === PluginApprovalResolutions.ALLOW_ONCE ||
+          decision === PluginApprovalResolutions.ALLOW_ALWAYS
+        ) {
+          return {
+            blocked: false,
+            params: mergeParamsWithApprovalOverrides(params, hookResult.params),
+          };
+        }
+        if (decision === PluginApprovalResolutions.DENY) {
+          return { blocked: true, reason: "Denied by user" };
+        }
+        const timeoutBehavior = approval.timeoutBehavior ?? "deny";
+        if (timeoutBehavior === "allow") {
+          return {
+            blocked: false,
+            params: mergeParamsWithApprovalOverrides(params, hookResult.params),
+          };
+        }
+        return { blocked: true, reason: "Approval timed out" };
+      } catch (err) {
+        safeOnResolution(PluginApprovalResolutions.CANCELLED);
+        if (isAbortSignalCancellation(err, args.signal)) {
+          log.warn(`plugin approval wait cancelled by run abort: ${String(err)}`);
+          return {
+            blocked: true,
+            reason: "Approval cancelled (run aborted)",
+          };
+        }
+        log.warn(`plugin approval gateway request failed, falling back to block: ${String(err)}`);
+        return {
+          blocked: true,
+          reason: "Plugin approval required (gateway unavailable)",
+        };
       }
-      return { blocked: false, params: hookResult.params };
+    }
+
+    if (hookResult?.params) {
+      return {
+        blocked: false,
+        params: mergeParamsWithApprovalOverrides(params, hookResult.params),
+      };
     }
   } catch (err) {
     const toolCallId = args.toolCallId ? ` toolCallId=${args.toolCallId}` : "";
-    log.warn(`before_tool_call hook failed: tool=${toolName}${toolCallId} error=${String(err)}`);
+    const cause = unwrapErrorCause(err);
+    log.error(`before_tool_call hook failed: tool=${toolName}${toolCallId} error=${String(cause)}`);
+    return {
+      blocked: true,
+      reason: BEFORE_TOOL_CALL_HOOK_FAILURE_REASON,
+    };
   }
 
   return { blocked: false, params };
@@ -393,6 +394,7 @@ export function wrapToolWithBeforeToolCallHook(
         params,
         toolCallId,
         ctx,
+        signal,
       });
       if (outcome.blocked) {
         throw new Error(outcome.reason);
@@ -430,6 +432,8 @@ export function wrapToolWithBeforeToolCallHook(
       }
     },
   };
+  copyPluginToolMeta(tool, wrappedTool);
+  copyChannelAgentToolMeta(tool as never, wrappedTool as never);
   Object.defineProperty(wrappedTool, BEFORE_TOOL_CALL_WRAPPED, {
     value: true,
     enumerable: true,
@@ -454,5 +458,6 @@ export const __testing = {
   buildAdjustedParamsKey,
   adjustedParamsByToolCallId,
   runBeforeToolCallHook,
+  mergeParamsWithApprovalOverrides,
   isPlainObject,
 };

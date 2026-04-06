@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { syncAnthropicDefaultProfileFromClaudeCliCredential } from "./onboard-auth.credentials.js";
 import {
   setByteplusApiKey,
   setCloudflareAiGatewayConfig,
@@ -9,7 +8,8 @@ import {
   setOpencodeZenApiKey,
   setOpenaiApiKey,
   setVolcengineApiKey,
-} from "./onboard-auth.js";
+} from "../plugins/provider-auth-storage.js";
+import { syncAnthropicDefaultProfileFromClaudeCliCredential } from "./onboard-auth.credentials.js";
 import {
   createAuthTestLifecycle,
   readAuthProfilesForAgent,

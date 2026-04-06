@@ -12,18 +12,18 @@ export const CORE_CLI_COMMAND_DESCRIPTORS = [
   },
   {
     name: "onboard",
-    description: "Interactive onboarding wizard for gateway, workspace, and skills",
+    description: "Interactive onboarding for gateway, workspace, and skills",
     hasSubcommands: false,
   },
   {
     name: "configure",
-    description: "Interactive setup wizard for credentials, channels, gateway, and agent defaults",
+    description: "Interactive configuration for credentials, channels, gateway, and agent defaults",
     hasSubcommands: false,
   },
   {
     name: "config",
     description:
-      "Non-interactive config helpers (get/set/unset/file/validate). Default: starts setup wizard.",
+      "Non-interactive config helpers (get/set/unset/file/validate). Default: starts guided setup.",
     hasSubcommands: true,
   },
   {
@@ -57,11 +57,6 @@ export const CORE_CLI_COMMAND_DESCRIPTORS = [
     hasSubcommands: true,
   },
   {
-    name: "memory",
-    description: "Search and reindex memory files",
-    hasSubcommands: true,
-  },
-  {
     name: "agent",
     description: "Run one agent turn via the Gateway",
     hasSubcommands: false,
@@ -87,8 +82,8 @@ export const CORE_CLI_COMMAND_DESCRIPTORS = [
     hasSubcommands: true,
   },
   {
-    name: "browser",
-    description: "Manage OpenClaw's dedicated browser (Chrome/Chromium)",
+    name: "tasks",
+    description: "Inspect durable background task state",
     hasSubcommands: true,
   },
 ] as const satisfies ReadonlyArray<CoreCliCommandDescriptor>;

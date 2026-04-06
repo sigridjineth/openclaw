@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const createFeishuClientMock = vi.hoisted(() => vi.fn());
 
@@ -6,7 +6,9 @@ vi.mock("./client.js", () => ({
   createFeishuClient: createFeishuClientMock,
 }));
 
-import { FEISHU_PROBE_REQUEST_TIMEOUT_MS, probeFeishu, clearProbeCache } from "./probe.js";
+let FEISHU_PROBE_REQUEST_TIMEOUT_MS: typeof import("./probe.js").FEISHU_PROBE_REQUEST_TIMEOUT_MS;
+let probeFeishu: typeof import("./probe.js").probeFeishu;
+let clearProbeCache: typeof import("./probe.js").clearProbeCache;
 
 const DEFAULT_CREDS = { appId: "cli_123", appSecret: "secret" } as const; // pragma: allowlist secret
 const DEFAULT_SUCCESS_RESPONSE = {
@@ -40,7 +42,12 @@ function setupSuccessClient() {
 
 async function expectDefaultSuccessResult(
   creds = DEFAULT_CREDS,
-  expected: Awaited<ReturnType<typeof probeFeishu>> = DEFAULT_SUCCESS_RESULT,
+  expected: {
+    ok: true;
+    appId: string;
+    botName: string;
+    botOpenId: string;
+  } = DEFAULT_SUCCESS_RESULT,
 ) {
   const result = await probeFeishu(creds);
   expect(result).toEqual(expected);
@@ -93,6 +100,11 @@ async function readSequentialDefaultProbePair() {
 }
 
 describe("probeFeishu", () => {
+  beforeAll(async () => {
+    ({ FEISHU_PROBE_REQUEST_TIMEOUT_MS, probeFeishu, clearProbeCache } =
+      await import("./probe.js"));
+  });
+
   beforeEach(() => {
     clearProbeCache();
     vi.restoreAllMocks();

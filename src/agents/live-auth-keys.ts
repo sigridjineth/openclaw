@@ -188,6 +188,12 @@ export function isAnthropicBillingError(message: string): boolean {
   if (lower.includes("payment required")) {
     return true;
   }
+  if (lower.includes("third-party apps now draw from your extra usage")) {
+    return true;
+  }
+  if (lower.includes("claude.ai/settings/usage")) {
+    return true;
+  }
   if (lower.includes("billing") && lower.includes("disabled")) {
     return true;
   }

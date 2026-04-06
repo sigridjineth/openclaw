@@ -1,91 +1,85 @@
 import { describe, expect, it } from "vitest";
-import { registerSingleProviderPlugin } from "../../src/test-utils/plugin-registration.js";
-import {
-  createProviderUsageFetch,
-  makeResponse,
-} from "../../src/test-utils/provider-usage-fetch.js";
+import { registerSingleProviderPlugin } from "../../test/helpers/plugins/plugin-registration.js";
 import anthropicPlugin from "./index.js";
 
-const registerProvider = () => registerSingleProviderPlugin(anthropicPlugin);
+describe("anthropic provider replay hooks", () => {
+  it("owns native reasoning output mode for Claude transports", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
 
-describe("anthropic plugin", () => {
-  it("owns anthropic 4.6 forward-compat resolution", () => {
-    const provider = registerProvider();
-    const model = provider.resolveDynamicModel?.({
-      provider: "anthropic",
-      modelId: "claude-sonnet-4.6-20260219",
-      modelRegistry: {
-        find: (_provider: string, id: string) =>
-          id === "claude-sonnet-4.5-20260219"
-            ? {
-                id,
-                name: id,
-                api: "anthropic-messages",
-                provider: "anthropic",
-                baseUrl: "https://api.anthropic.com",
-                reasoning: true,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 200_000,
-                maxTokens: 8_192,
-              }
-            : null,
-      } as never,
-    });
-
-    expect(model).toMatchObject({
-      id: "claude-sonnet-4.6-20260219",
-      provider: "anthropic",
-      api: "anthropic-messages",
-      baseUrl: "https://api.anthropic.com",
-    });
-  });
-
-  it("owns usage auth resolution", async () => {
-    const provider = registerProvider();
-    await expect(
-      provider.resolveUsageAuth?.({
-        config: {} as never,
-        env: {} as NodeJS.ProcessEnv,
+    expect(
+      provider.resolveReasoningOutputMode?.({
         provider: "anthropic",
-        resolveApiKeyFromConfigAndStore: () => undefined,
-        resolveOAuthToken: async () => ({
-          token: "anthropic-oauth-token",
-        }),
-      }),
-    ).resolves.toEqual({
-      token: "anthropic-oauth-token",
+        modelApi: "anthropic-messages",
+        modelId: "claude-sonnet-4-6",
+      } as never),
+    ).toBe("native");
+  });
+
+  it("owns replay policy for Claude transports", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    expect(
+      provider.buildReplayPolicy?.({
+        provider: "anthropic",
+        modelApi: "anthropic-messages",
+        modelId: "claude-sonnet-4-6",
+      } as never),
+    ).toEqual({
+      sanitizeMode: "full",
+      sanitizeToolCallIds: true,
+      toolCallIdMode: "strict",
+      preserveSignatures: true,
+      repairToolUseResultPairing: true,
+      validateAnthropicTurns: true,
+      allowSyntheticToolResults: true,
+      dropThinkingBlocks: true,
     });
   });
 
-  it("owns usage snapshot fetching", async () => {
-    const provider = registerProvider();
-    const mockFetch = createProviderUsageFetch(async (url) => {
-      if (url.includes("api.anthropic.com/api/oauth/usage")) {
-        return makeResponse(200, {
-          five_hour: { utilization: 20, resets_at: "2026-01-07T01:00:00Z" },
-          seven_day: { utilization: 35, resets_at: "2026-01-09T01:00:00Z" },
-        });
-      }
-      return makeResponse(404, "not found");
-    });
+  it("defaults provider api through plugin config normalization", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
 
-    const snapshot = await provider.fetchUsageSnapshot?.({
-      config: {} as never,
-      env: {} as NodeJS.ProcessEnv,
-      provider: "anthropic",
-      token: "anthropic-oauth-token",
-      timeoutMs: 5_000,
-      fetchFn: mockFetch as unknown as typeof fetch,
+    expect(
+      provider.normalizeConfig?.({
+        provider: "anthropic",
+        providerConfig: {
+          models: [{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" }],
+        },
+      } as never),
+    ).toMatchObject({
+      api: "anthropic-messages",
     });
+  });
 
-    expect(snapshot).toEqual({
+  it("applies Anthropic pruning defaults through plugin hooks", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    const next = provider.applyConfigDefaults?.({
       provider: "anthropic",
-      displayName: "Claude",
-      windows: [
-        { label: "5h", usedPercent: 20, resetAt: Date.parse("2026-01-07T01:00:00Z") },
-        { label: "Week", usedPercent: 35, resetAt: Date.parse("2026-01-09T01:00:00Z") },
-      ],
+      env: {},
+      config: {
+        auth: {
+          profiles: {
+            "anthropic:api": { provider: "anthropic", mode: "api_key" },
+          },
+        },
+        agents: {
+          defaults: {
+            model: { primary: "anthropic/claude-opus-4-5" },
+          },
+        },
+      },
+    } as never);
+
+    expect(next?.agents?.defaults?.contextPruning).toMatchObject({
+      mode: "cache-ttl",
+      ttl: "1h",
     });
+    expect(next?.agents?.defaults?.heartbeat).toMatchObject({
+      every: "30m",
+    });
+    expect(
+      next?.agents?.defaults?.models?.["anthropic/claude-opus-4-5"]?.params?.cacheRetention,
+    ).toBe("short");
   });
 });

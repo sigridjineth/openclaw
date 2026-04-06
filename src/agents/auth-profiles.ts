@@ -6,7 +6,7 @@ export type {
 export type { AuthProfileEligibilityReasonCode } from "./auth-profiles/order.js";
 export { resolveAuthProfileDisplayLabel } from "./auth-profiles/display.js";
 export { formatAuthDoctorHint } from "./auth-profiles/doctor.js";
-export { forceRefreshOAuthProfile, resolveApiKeyForProfile } from "./auth-profiles/oauth.js";
+export { resolveApiKeyForProfile } from "./auth-profiles/oauth.js";
 export { resolveAuthProfileEligibility, resolveAuthProfileOrder } from "./auth-profiles/order.js";
 export { resolveAuthStorePathForDisplay } from "./auth-profiles/paths.js";
 export {

@@ -1,10 +1,10 @@
 import { CONTEXT_WINDOW_HARD_MIN_TOKENS } from "../agents/context-window-guard.js";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { buildModelAliasIndex, modelKey } from "../agents/model-selection.js";
-import { OLLAMA_DEFAULT_BASE_URL } from "../agents/ollama-models.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
+import { OLLAMA_DEFAULT_BASE_URL } from "../plugins/provider-model-defaults.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import {
@@ -19,27 +19,42 @@ import type { SecretInputMode } from "./onboard-types.js";
 
 const DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_HARD_MIN_TOKENS;
 const DEFAULT_MAX_TOKENS = 4096;
+// Azure OpenAI uses the Responses API which supports larger defaults
+const AZURE_DEFAULT_CONTEXT_WINDOW = 400_000;
+const AZURE_DEFAULT_MAX_TOKENS = 16_384;
 const VERIFY_TIMEOUT_MS = 30_000;
+export const CLI_PROXY_API_DEFAULT_BASE_URL = "http://127.0.0.1:8317";
+export const CLI_PROXY_API_DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+export const CLI_PROXY_API_DEFAULT_PROVIDER_ID = "cli-proxy-api";
+export const CLI_PROXY_API_KEY_ENV_VAR = "CLI_PROXY_API_KEY";
 
 function normalizeContextWindowForCustomModel(value: unknown): number {
   const parsed = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 0;
   return parsed >= CONTEXT_WINDOW_HARD_MIN_TOKENS ? parsed : CONTEXT_WINDOW_HARD_MIN_TOKENS;
 }
 
-/**
- * Detects if a URL is from Azure AI Foundry or Azure OpenAI.
- * Matches both:
- * - https://*.services.ai.azure.com (Azure AI Foundry)
- * - https://*.openai.azure.com (classic Azure OpenAI)
- */
-function isAzureUrl(baseUrl: string): boolean {
+function isAzureFoundryUrl(baseUrl: string): boolean {
   try {
     const url = new URL(baseUrl);
     const host = url.hostname.toLowerCase();
-    return host.endsWith(".services.ai.azure.com") || host.endsWith(".openai.azure.com");
+    return host.endsWith(".services.ai.azure.com");
   } catch {
     return false;
   }
+}
+
+function isAzureOpenAiUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    return host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function isAzureUrl(baseUrl: string): boolean {
+  return isAzureFoundryUrl(baseUrl) || isAzureOpenAiUrl(baseUrl);
 }
 
 /**
@@ -49,8 +64,8 @@ function isAzureUrl(baseUrl: string): boolean {
  * The api-version will be handled by the Azure OpenAI client or as a query param.
  *
  * Example:
- *   https://my-resource.services.ai.azure.com + gpt-5-nano
- *   => https://my-resource.services.ai.azure.com/openai/deployments/gpt-5-nano
+ *   https://my-resource.services.ai.azure.com + gpt-5.4-nano
+ *   => https://my-resource.services.ai.azure.com/openai/deployments/gpt-5.4-nano
  */
 function transformAzureUrl(baseUrl: string, modelId: string): string {
   const normalizedUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
@@ -59,6 +74,32 @@ function transformAzureUrl(baseUrl: string, modelId: string): string {
     return normalizedUrl;
   }
   return `${normalizedUrl}/openai/deployments/${modelId}`;
+}
+
+/**
+ * Transforms an Azure URL into the base URL stored in config.
+ *
+ * Example:
+ *   https://my-resource.openai.azure.com
+ *   => https://my-resource.openai.azure.com/openai/v1
+ */
+function transformAzureConfigUrl(baseUrl: string): string {
+  const normalizedUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  if (normalizedUrl.endsWith("/openai/v1")) {
+    return normalizedUrl;
+  }
+  // Strip a full deployment path back to the base origin
+  const deploymentIdx = normalizedUrl.indexOf("/openai/deployments/");
+  const base = deploymentIdx !== -1 ? normalizedUrl.slice(0, deploymentIdx) : normalizedUrl;
+  return `${base}/openai/v1`;
+}
+
+function hasSameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).hostname.toLowerCase() === new URL(b).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 export type CustomApiCompatibility = "openai" | "anthropic";
@@ -174,7 +215,11 @@ function resolveUniqueEndpointId(params: {
 }) {
   const normalized = normalizeEndpointId(params.requestedId) || "custom";
   const existing = params.providers[normalized];
-  if (!existing?.baseUrl || existing.baseUrl === params.baseUrl) {
+  if (
+    !existing?.baseUrl ||
+    existing.baseUrl === params.baseUrl ||
+    (isAzureUrl(params.baseUrl) && hasSameHost(existing.baseUrl, params.baseUrl))
+  ) {
     return { providerId: normalized, renamed: false };
   }
   let suffix = 2;
@@ -320,26 +365,31 @@ async function requestOpenAiVerification(params: {
   apiKey: string;
   modelId: string;
 }): Promise<VerificationResult> {
-  const endpoint = resolveVerificationEndpoint({
-    baseUrl: params.baseUrl,
-    modelId: params.modelId,
-    endpointPath: "chat/completions",
-  });
   const isBaseUrlAzureUrl = isAzureUrl(params.baseUrl);
   const headers = isBaseUrlAzureUrl
     ? buildAzureOpenAiHeaders(params.apiKey)
     : buildOpenAiHeaders(params.apiKey);
-  if (isBaseUrlAzureUrl) {
+  if (isAzureOpenAiUrl(params.baseUrl)) {
+    const endpoint = new URL(
+      "responses",
+      transformAzureConfigUrl(params.baseUrl).replace(/\/?$/, "/"),
+    ).href;
     return await requestVerification({
       endpoint,
       headers,
       body: {
-        messages: [{ role: "user", content: "Hi" }],
-        max_completion_tokens: 5,
+        model: params.modelId,
+        input: "Hi",
+        max_output_tokens: 16,
         stream: false,
       },
     });
   } else {
+    const endpoint = resolveVerificationEndpoint({
+      baseUrl: params.baseUrl,
+      modelId: params.modelId,
+      endpointPath: "chat/completions",
+    });
     return await requestVerification({
       endpoint,
       headers,
@@ -386,6 +436,8 @@ async function promptBaseUrlAndKey(params: {
   config: OpenClawConfig;
   secretInputMode?: SecretInputMode;
   initialBaseUrl?: string;
+  envLabel?: string;
+  apiKeyPromptMessage?: string;
 }): Promise<{ baseUrl: string; apiKey?: SecretInput; resolvedApiKey: string }> {
   const baseUrlInput = await params.prompter.text({
     message: "API Base URL",
@@ -406,8 +458,8 @@ async function promptBaseUrlAndKey(params: {
   const resolvedApiKey = await ensureApiKeyFromEnvOrPrompt({
     config: params.config,
     provider: providerHint,
-    envLabel: "CUSTOM_API_KEY",
-    promptMessage: "API Key (leave blank if not required)",
+    envLabel: params.envLabel ?? "CUSTOM_API_KEY",
+    promptMessage: params.apiKeyPromptMessage ?? "API Key (leave blank if not required)",
     normalize: normalizeSecretInput,
     validate: () => undefined,
     prompter: params.prompter,
@@ -572,8 +624,9 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
     throw new CustomApiError("invalid_model_id", "Custom provider model ID is required.");
   }
 
-  // Transform Azure URLs to include the deployment path for API calls
-  const resolvedBaseUrl = isAzureUrl(baseUrl) ? transformAzureUrl(baseUrl, modelId) : baseUrl;
+  const isAzure = isAzureUrl(baseUrl);
+  const isAzureOpenAi = isAzureOpenAiUrl(baseUrl);
+  const resolvedBaseUrl = isAzure ? transformAzureConfigUrl(baseUrl) : baseUrl;
 
   const providerIdResult = resolveCustomProviderId({
     config: params.config,
@@ -597,21 +650,39 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
   const existingProvider = providers[providerId];
   const existingModels = Array.isArray(existingProvider?.models) ? existingProvider.models : [];
   const hasModel = existingModels.some((model) => model.id === modelId);
-  const nextModel = {
-    id: modelId,
-    name: `${modelId} (Custom Provider)`,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
-    input: ["text"] as ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    reasoning: false,
-  };
+  const isLikelyReasoningModel = isAzure && /\b(o[134]|gpt-([5-9]|\d{2,}))\b/i.test(modelId);
+  const nextModel = isAzure
+    ? {
+        id: modelId,
+        name: `${modelId} (Custom Provider)`,
+        contextWindow: AZURE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: AZURE_DEFAULT_MAX_TOKENS,
+        input: isLikelyReasoningModel
+          ? (["text", "image"] as Array<"text" | "image">)
+          : (["text"] as ["text"]),
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        reasoning: isLikelyReasoningModel,
+        compat: { supportsStore: false },
+      }
+    : {
+        id: modelId,
+        name: `${modelId} (Custom Provider)`,
+        contextWindow: DEFAULT_CONTEXT_WINDOW,
+        maxTokens: DEFAULT_MAX_TOKENS,
+        input: ["text"] as ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        reasoning: false,
+      };
   const mergedModels = hasModel
     ? existingModels.map((model) =>
         model.id === modelId
           ? {
               ...model,
+              ...(isAzure ? nextModel : {}),
+              name: model.name ?? nextModel.name,
+              cost: model.cost ?? nextModel.cost,
               contextWindow: normalizeContextWindowForCustomModel(model.contextWindow),
+              maxTokens: model.maxTokens ?? nextModel.maxTokens,
             }
           : model,
       )
@@ -620,6 +691,11 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
   const normalizedApiKey =
     normalizeOptionalProviderApiKey(params.apiKey) ??
     normalizeOptionalProviderApiKey(existingApiKey);
+
+  const providerApi = isAzureOpenAi
+    ? ("azure-openai-responses" as const)
+    : resolveProviderApi(params.compatibility);
+  const azureHeaders = isAzure && normalizedApiKey ? { "api-key": normalizedApiKey } : undefined;
 
   let config: OpenClawConfig = {
     ...params.config,
@@ -631,8 +707,10 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
         [providerId]: {
           ...existingProviderRest,
           baseUrl: resolvedBaseUrl,
-          api: resolveProviderApi(params.compatibility),
+          api: providerApi,
           ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+          ...(isAzure ? { authHeader: false } : {}),
+          ...(azureHeaders ? { headers: azureHeaders } : {}),
           models: mergedModels.length > 0 ? mergedModels : [nextModel],
         },
       },
@@ -640,6 +718,30 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
   };
 
   config = applyPrimaryModel(config, modelRef);
+  if (isAzure && isLikelyReasoningModel) {
+    const existingPerModelThinking = config.agents?.defaults?.models?.[modelRef]?.params?.thinking;
+    if (!existingPerModelThinking) {
+      config = {
+        ...config,
+        agents: {
+          ...config.agents,
+          defaults: {
+            ...config.agents?.defaults,
+            models: {
+              ...config.agents?.defaults?.models,
+              [modelRef]: {
+                ...config.agents?.defaults?.models?.[modelRef],
+                params: {
+                  ...config.agents?.defaults?.models?.[modelRef]?.params,
+                  thinking: "medium",
+                },
+              },
+            },
+          },
+        },
+      };
+    }
+  }
   if (alias) {
     config = {
       ...config,
@@ -667,6 +769,117 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
       ? { providerIdRenamedFrom: providerIdResult.providerIdRenamedFrom }
       : {}),
   };
+}
+
+export function parseNonInteractiveCliProxyApiFlags(
+  params: ParseNonInteractiveCustomApiFlagsParams,
+): ParsedNonInteractiveCustomApiFlags {
+  const compatibility = params.compatibility?.trim();
+  if (compatibility && parseCustomApiCompatibility(compatibility) !== "anthropic") {
+    throw new CustomApiError(
+      "invalid_compatibility",
+      "CLI Proxy API requires --custom-compatibility anthropic (or omit the flag).",
+    );
+  }
+  return parseNonInteractiveCustomApiFlags({
+    baseUrl: params.baseUrl?.trim() || CLI_PROXY_API_DEFAULT_BASE_URL,
+    modelId: params.modelId?.trim() || CLI_PROXY_API_DEFAULT_MODEL_ID,
+    compatibility: "anthropic",
+    apiKey: params.apiKey,
+    providerId: params.providerId?.trim() || CLI_PROXY_API_DEFAULT_PROVIDER_ID,
+  });
+}
+
+export async function promptCliProxyApiConfig(params: {
+  prompter: WizardPrompter;
+  runtime: RuntimeEnv;
+  config: OpenClawConfig;
+  secretInputMode?: SecretInputMode;
+}): Promise<CustomApiResult> {
+  const { prompter, runtime, config } = params;
+
+  await prompter.note(
+    [
+      "Connect OpenClaw to a local CLI Proxy API bridge that is already signed into Claude Code OAuth.",
+      "Use the proxy root base URL without /v1 (OpenClaw adds /v1/messages for Anthropic-compatible requests).",
+    ].join("\n"),
+    "CLI Proxy API",
+  );
+
+  let baseInput = await promptBaseUrlAndKey({
+    prompter,
+    config,
+    secretInputMode: params.secretInputMode,
+    initialBaseUrl: CLI_PROXY_API_DEFAULT_BASE_URL,
+    envLabel: CLI_PROXY_API_KEY_ENV_VAR,
+    apiKeyPromptMessage: "CLI Proxy API key (leave blank if not required)",
+  });
+  let modelId = (
+    await prompter.text({
+      message: "Model ID",
+      initialValue: CLI_PROXY_API_DEFAULT_MODEL_ID,
+      placeholder: CLI_PROXY_API_DEFAULT_MODEL_ID,
+      validate: (val) => (val.trim() ? undefined : "Model ID is required"),
+    })
+  ).trim();
+
+  while (true) {
+    const verifySpinner = prompter.progress("Verifying CLI Proxy API...");
+    const result = await requestAnthropicVerification({
+      baseUrl: baseInput.baseUrl,
+      apiKey: baseInput.resolvedApiKey,
+      modelId,
+    });
+    if (result.ok) {
+      verifySpinner.stop("CLI Proxy API verification successful.");
+      break;
+    }
+    if (result.status !== undefined) {
+      verifySpinner.stop(`CLI Proxy API verification failed: status ${result.status}`);
+    } else {
+      verifySpinner.stop(
+        `CLI Proxy API verification failed: ${formatVerificationError(result.error)}`,
+      );
+    }
+    const retryChoice = await promptCustomApiRetryChoice(prompter);
+    const next = await applyCustomApiRetryChoice({
+      prompter,
+      config,
+      secretInputMode: params.secretInputMode,
+      retryChoice,
+      current: {
+        baseUrl: baseInput.baseUrl,
+        apiKey: baseInput.apiKey,
+        resolvedApiKey: baseInput.resolvedApiKey,
+        modelId,
+      },
+    });
+    baseInput = {
+      baseUrl: next.baseUrl,
+      apiKey: next.apiKey,
+      resolvedApiKey: next.resolvedApiKey,
+    };
+    modelId = next.modelId;
+  }
+
+  const result = applyCustomApiConfig({
+    config,
+    baseUrl: baseInput.baseUrl,
+    modelId,
+    compatibility: "anthropic",
+    apiKey: baseInput.apiKey,
+    providerId: CLI_PROXY_API_DEFAULT_PROVIDER_ID,
+  });
+
+  if (result.providerIdRenamedFrom && result.providerId) {
+    await prompter.note(
+      `Provider ID "${result.providerIdRenamedFrom}" already exists for a different base URL. Using "${result.providerId}".`,
+      "CLI Proxy API",
+    );
+  }
+
+  runtime.log(`Configured CLI Proxy API provider: ${result.providerId}/${result.modelId}`);
+  return result;
 }
 
 export async function promptCustomApiConfig(params: {

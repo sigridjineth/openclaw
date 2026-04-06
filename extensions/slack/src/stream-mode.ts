@@ -4,7 +4,7 @@ import {
   resolveSlackStreamingMode,
   type SlackLegacyDraftStreamMode,
   type StreamingMode,
-} from "../../../src/config/discord-preview-streaming.js";
+} from "./streaming-compat.js";
 
 export type SlackStreamMode = SlackLegacyDraftStreamMode;
 export type SlackStreamingMode = StreamingMode;

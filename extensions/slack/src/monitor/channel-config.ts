@@ -3,8 +3,8 @@ import {
   buildChannelKeyCandidates,
   resolveChannelEntryMatchWithFallback,
   type ChannelMatchSource,
-} from "../../../../src/channels/channel-config.js";
-import type { SlackReactionNotificationMode } from "../../../../src/config/config.js";
+} from "openclaw/plugin-sdk/channel-targets";
+import type { SlackReactionNotificationMode } from "openclaw/plugin-sdk/config-runtime";
 import type { SlackMessageEvent } from "../types.js";
 import { allowListMatches, normalizeAllowListLower, normalizeSlackSlug } from "./allow-list.js";
 
@@ -21,7 +21,6 @@ export type SlackChannelConfigResolved = {
 
 export type SlackChannelConfigEntry = {
   enabled?: boolean;
-  allow?: boolean;
   requireMention?: boolean;
   allowBots?: boolean;
   users?: Array<string | number>;
@@ -135,9 +134,7 @@ export function resolveSlackChannelConfig(params: {
   }
 
   const resolved = matched ?? fallback ?? {};
-  const allowed =
-    firstDefined(resolved.enabled, resolved.allow, fallback?.enabled, fallback?.allow, true) ??
-    true;
+  const allowed = firstDefined(resolved.enabled, fallback?.enabled, true) ?? true;
   const requireMention =
     firstDefined(resolved.requireMention, fallback?.requireMention, requireMentionDefault) ??
     requireMentionDefault;

@@ -1,4 +1,5 @@
 import { resolveProviderCacheTtlEligibility } from "../../plugins/provider-runtime.js";
+import { isAnthropicFamilyCacheTtlEligible } from "./anthropic-family-cache-semantics.js";
 
 type CustomEntryLike = { type?: unknown; customType?: unknown; data?: unknown };
 
@@ -10,9 +11,11 @@ export type CacheTtlEntryData = {
   modelId?: string;
 };
 
-const CACHE_TTL_NATIVE_PROVIDERS = new Set(["moonshot", "zai"]);
-
-export function isCacheTtlEligibleProvider(provider: string, modelId: string): boolean {
+export function isCacheTtlEligibleProvider(
+  provider: string,
+  modelId: string,
+  modelApi?: string,
+): boolean {
   const normalizedProvider = provider.toLowerCase();
   const normalizedModelId = modelId.toLowerCase();
   const pluginEligibility = resolveProviderCacheTtlEligibility({
@@ -20,23 +23,17 @@ export function isCacheTtlEligibleProvider(provider: string, modelId: string): b
     context: {
       provider: normalizedProvider,
       modelId: normalizedModelId,
+      modelApi,
     },
   });
   if (pluginEligibility !== undefined) {
     return pluginEligibility;
   }
-  if (normalizedProvider === "kilocode" && normalizedModelId.startsWith("anthropic/")) {
-    return true;
-  }
-  // Legacy fallback for tests / plugin-disabled contexts. The Anthropic plugin
-  // owns this policy in normal runtime.
-  if (normalizedProvider === "anthropic") {
-    return true;
-  }
-  if (CACHE_TTL_NATIVE_PROVIDERS.has(normalizedProvider)) {
-    return true;
-  }
-  return false;
+  return isAnthropicFamilyCacheTtlEligible({
+    provider: normalizedProvider,
+    modelId: normalizedModelId,
+    modelApi,
+  });
 }
 
 export function readLastCacheTtlTimestamp(sessionManager: unknown): number | null {

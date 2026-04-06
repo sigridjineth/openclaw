@@ -7,10 +7,22 @@ import {
   resolveSecretInputRef,
 } from "../config/types.secrets.js";
 import { assertExplicitGatewayAuthModeWhenBothConfigured } from "../gateway/auth-mode-policy.js";
+import { isLoopbackHost, isSecureWebSocketUrl } from "../gateway/net.js";
 import { resolveRequiredConfiguredSecretRefInputString } from "../gateway/resolve-configured-secret-input-string.js";
 import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
+import {
+  pickMatchingExternalInterfaceAddress,
+  safeNetworkInterfaces,
+} from "../infra/network-interfaces.js";
+import { PAIRING_SETUP_BOOTSTRAP_PROFILE } from "../shared/device-bootstrap-profile.js";
 import { resolveGatewayBindUrl } from "../shared/gateway-bind-url.js";
-import { isCarrierGradeNatIpv4Address, isRfc1918Ipv4Address } from "../shared/net/ip.js";
+import {
+  isCarrierGradeNatIpv4Address,
+  isIpv4Address,
+  isIpv6Address,
+  isRfc1918Ipv4Address,
+  parseCanonicalIpAddress,
+} from "../shared/net/ip.js";
 import { resolveTailnetHostWithRunner } from "../shared/tailscale-status.js";
 
 export type PairingSetupPayload = {
@@ -56,6 +68,73 @@ type ResolveUrlResult = {
   source?: string;
   error?: string;
 };
+
+function describeSecureMobilePairingFix(source?: string): string {
+  const sourceNote = source ? ` Resolved source: ${source}.` : "";
+  return (
+    "Tailscale and public mobile pairing require a secure gateway URL (wss://) or Tailscale Serve/Funnel." +
+    sourceNote +
+    " Fix: use a private LAN host/address, prefer gateway.tailscale.mode=serve, or set " +
+    "gateway.remote.url / plugins.entries.device-pair.config.publicUrl to a wss:// URL. " +
+    "ws:// is only valid for localhost, private LAN, or the Android emulator."
+  );
+}
+
+function isPrivateLanHostname(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/\.+$/, "");
+  if (!normalized) {
+    return false;
+  }
+  return normalized.endsWith(".local") || (!normalized.includes(".") && !normalized.includes(":"));
+}
+
+function isPrivateLanIpHost(host: string): boolean {
+  if (isRfc1918Ipv4Address(host)) {
+    return true;
+  }
+  const parsed = parseCanonicalIpAddress(host);
+  if (!parsed) {
+    return false;
+  }
+  if (isIpv4Address(parsed)) {
+    const normalized = parsed.toString();
+    return normalized.startsWith("169.254.") && !isCarrierGradeNatIpv4Address(normalized);
+  }
+  if (!isIpv6Address(parsed)) {
+    return false;
+  }
+  const normalized = parsed.toString().toLowerCase();
+  return (
+    normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd")
+  );
+}
+
+function isMobilePairingCleartextAllowedHost(host: string): boolean {
+  return (
+    isLoopbackHost(host) ||
+    host === "10.0.2.2" ||
+    isPrivateLanIpHost(host) ||
+    isPrivateLanHostname(host)
+  );
+}
+
+function validateMobilePairingUrl(url: string, source?: string): string | null {
+  if (isSecureWebSocketUrl(url)) {
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "Resolved mobile pairing URL is invalid.";
+  }
+  const protocol =
+    parsed.protocol === "https:" ? "wss:" : parsed.protocol === "http:" ? "ws:" : parsed.protocol;
+  if (protocol !== "ws:" || isMobilePairingCleartextAllowedHost(parsed.hostname)) {
+    return null;
+  }
+  return describeSecureMobilePairingFix(source);
+}
 
 type ResolveAuthLabelResult = {
   label?: "token" | "password";
@@ -118,27 +197,12 @@ function pickIPv4Matching(
   networkInterfaces: () => ReturnType<typeof os.networkInterfaces>,
   matches: (address: string) => boolean,
 ): string | null {
-  const nets = networkInterfaces();
-  for (const entries of Object.values(nets)) {
-    if (!entries) {
-      continue;
-    }
-    for (const entry of entries) {
-      const family = entry?.family;
-      const isIpv4 = family === "IPv4";
-      if (!entry || entry.internal || !isIpv4) {
-        continue;
-      }
-      const address = entry.address?.trim() ?? "";
-      if (!address) {
-        continue;
-      }
-      if (matches(address)) {
-        return address;
-      }
-    }
-  }
-  return null;
+  return (
+    pickMatchingExternalInterfaceAddress(safeNetworkInterfaces(networkInterfaces), {
+      family: "IPv4",
+      matches,
+    }) ?? null
+  );
 }
 
 function pickLanIPv4(
@@ -154,13 +218,11 @@ function pickTailnetIPv4(
 }
 
 function resolveGatewayTokenFromEnv(env: NodeJS.ProcessEnv): string | undefined {
-  return env.OPENCLAW_GATEWAY_TOKEN?.trim() || env.CLAWDBOT_GATEWAY_TOKEN?.trim() || undefined;
+  return env.OPENCLAW_GATEWAY_TOKEN?.trim() || undefined;
 }
 
 function resolveGatewayPasswordFromEnv(env: NodeJS.ProcessEnv): string | undefined {
-  return (
-    env.OPENCLAW_GATEWAY_PASSWORD?.trim() || env.CLAWDBOT_GATEWAY_PASSWORD?.trim() || undefined
-  );
+  return env.OPENCLAW_GATEWAY_PASSWORD?.trim() || undefined;
 }
 
 function resolvePairingSetupAuthLabel(
@@ -219,9 +281,7 @@ async function resolveGatewayTokenSecretRef(
     return cfg;
   }
   if (mode !== "token") {
-    const hasPasswordEnvCandidate = Boolean(
-      env.OPENCLAW_GATEWAY_PASSWORD?.trim() || env.CLAWDBOT_GATEWAY_PASSWORD?.trim(),
-    );
+    const hasPasswordEnvCandidate = Boolean(env.OPENCLAW_GATEWAY_PASSWORD?.trim());
     if (hasPasswordEnvCandidate) {
       return cfg;
     }
@@ -375,7 +435,6 @@ export async function resolvePairingSetupFromConfig(
   if (authLabel.error) {
     return { ok: false, error: authLabel.error };
   }
-
   const urlResult = await resolveGatewayUrl(cfgForAuth, {
     env,
     publicUrl: options.publicUrl,
@@ -387,6 +446,10 @@ export async function resolvePairingSetupFromConfig(
 
   if (!urlResult.url) {
     return { ok: false, error: urlResult.error ?? "Gateway URL unavailable." };
+  }
+  const mobilePairingUrlError = validateMobilePairingUrl(urlResult.url, urlResult.source);
+  if (mobilePairingUrlError) {
+    return { ok: false, error: mobilePairingUrlError };
   }
 
   if (!authLabel.label) {
@@ -400,6 +463,7 @@ export async function resolvePairingSetupFromConfig(
       bootstrapToken: (
         await issueDeviceBootstrapToken({
           baseDir: options.pairingBaseDir,
+          profile: PAIRING_SETUP_BOOTSTRAP_PROFILE,
         })
       ).token,
     },

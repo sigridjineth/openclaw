@@ -2,6 +2,8 @@ import { ensureAuthProfileStore } from "../agents/auth-profiles.js";
 import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace.js";
 import type { OpenClawConfig, GatewayAuthConfig } from "../config/config.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
+import { resolveProviderPluginChoice } from "../plugins/provider-wizard.js";
+import { resolvePluginProviders } from "../plugins/providers.runtime.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
 import { promptAuthChoiceGrouped } from "./auth-choice-prompt.js";
@@ -13,7 +15,7 @@ import {
   promptDefaultModel,
   promptModelAllowlist,
 } from "./model-picker.js";
-import { promptCustomApiConfig } from "./onboard-custom.js";
+import { promptCliProxyApiConfig, promptCustomApiConfig } from "./onboard-custom.js";
 import { randomToken } from "./onboard-helpers.js";
 
 type GatewayAuthChoice = "token" | "password" | "trusted-proxy";
@@ -30,13 +32,29 @@ function sanitizeTokenValue(value: unknown): string | undefined {
   return trimmed;
 }
 
-const ANTHROPIC_OAUTH_MODEL_KEYS = [
-  "anthropic/claude-sonnet-4-6",
-  "anthropic/claude-opus-4-6",
-  "anthropic/claude-opus-4-5",
-  "anthropic/claude-sonnet-4-5",
-  "anthropic/claude-haiku-4-5",
-];
+function resolveProviderChoiceModelAllowlist(params: {
+  authChoice: string;
+  config: OpenClawConfig;
+  workspaceDir?: string;
+  env?: NodeJS.ProcessEnv;
+}):
+  | {
+      allowedKeys?: string[];
+      initialSelections?: string[];
+      message?: string;
+    }
+  | undefined {
+  const providers = resolvePluginProviders({
+    config: params.config,
+    workspaceDir: params.workspaceDir,
+    env: params.env,
+    mode: "setup",
+  });
+  return resolveProviderPluginChoice({
+    providers,
+    choice: params.authChoice,
+  })?.wizard?.modelAllowlist;
+}
 
 export function buildGatewayAuthConfig(params: {
   existing?: GatewayAuthConfig;
@@ -91,9 +109,19 @@ export async function promptAuthConfig(
   });
 
   let next = cfg;
+  const preferredProvider =
+    authChoice === "skip"
+      ? undefined
+      : await resolvePreferredProviderForAuthChoice({
+          choice: authChoice,
+          config: cfg,
+        });
   if (authChoice === "custom-api-key") {
     const customResult = await promptCustomApiConfig({ prompter, runtime, config: next });
     next = customResult.config;
+  } else if (authChoice === "cli-proxy-api") {
+    const proxyResult = await promptCliProxyApiConfig({ prompter, runtime, config: next });
+    next = proxyResult.config;
   } else if (authChoice !== "skip") {
     const applied = await applyAuthChoice({
       authChoice,
@@ -110,10 +138,7 @@ export async function promptAuthConfig(
       allowKeep: true,
       ignoreAllowlist: true,
       includeProviderPluginSetups: true,
-      preferredProvider: await resolvePreferredProviderForAuthChoice({
-        choice: authChoice,
-        config: next,
-      }),
+      preferredProvider,
       workspaceDir: resolveDefaultAgentWorkspaceDir(),
       runtime,
     });
@@ -125,16 +150,20 @@ export async function promptAuthConfig(
     }
   }
 
-  const anthropicOAuth =
-    authChoice === "setup-token" || authChoice === "token" || authChoice === "oauth";
-
-  if (authChoice !== "custom-api-key") {
+  if (authChoice !== "custom-api-key" && authChoice !== "cli-proxy-api") {
+    const modelAllowlist = resolveProviderChoiceModelAllowlist({
+      authChoice,
+      config: next,
+      workspaceDir: resolveDefaultAgentWorkspaceDir(),
+      env: process.env,
+    });
     const allowlistSelection = await promptModelAllowlist({
       config: next,
       prompter,
-      allowedKeys: anthropicOAuth ? ANTHROPIC_OAUTH_MODEL_KEYS : undefined,
-      initialSelections: anthropicOAuth ? ["anthropic/claude-sonnet-4-6"] : undefined,
-      message: anthropicOAuth ? "Anthropic OAuth models" : undefined,
+      allowedKeys: modelAllowlist?.allowedKeys,
+      initialSelections: modelAllowlist?.initialSelections,
+      message: modelAllowlist?.message,
+      preferredProvider,
     });
     if (allowlistSelection.models) {
       next = applyModelAllowlist(next, allowlistSelection.models);

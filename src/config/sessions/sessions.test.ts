@@ -3,14 +3,9 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { upsertAcpSessionMeta } from "../../acp/runtime/session-meta.js";
 import * as jsonFiles from "../../infra/json-files.js";
-import {
-  clearSessionStoreCacheForTest,
-  loadSessionStore,
-  mergeSessionEntry,
-  resolveAndPersistSessionFile,
-  updateSessionStore,
-} from "../sessions.js";
+import type { OpenClawConfig } from "../config.js";
 import type { SessionConfig } from "../types.base.js";
 import {
   resolveSessionFilePath,
@@ -18,9 +13,10 @@ import {
   resolveSessionTranscriptPathInDir,
   validateSessionId,
 } from "./paths.js";
-import { resolveSessionResetPolicy } from "./reset.js";
-import { appendAssistantMessageToSessionTranscript } from "./transcript.js";
-import type { SessionEntry } from "./types.js";
+import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset.js";
+import { resolveAndPersistSessionFile } from "./session-file.js";
+import { clearSessionStoreCacheForTest, loadSessionStore, updateSessionStore } from "./store.js";
+import { mergeSessionEntry, type SessionEntry } from "./types.js";
 
 function useTempSessionsFixture(prefix: string) {
   let tempDir = "";
@@ -144,6 +140,35 @@ describe("resolveSessionResetPolicy", () => {
       expect(groupPolicy.mode).toBe("daily");
     });
   });
+
+  it("defaults to daily resets at 4am local time", () => {
+    const policy = resolveSessionResetPolicy({
+      resetType: "direct",
+    });
+
+    expect(policy).toMatchObject({
+      mode: "daily",
+      atHour: 4,
+    });
+  });
+
+  it("treats idleMinutes=0 as never expiring by inactivity", () => {
+    const freshness = evaluateSessionFreshness({
+      updatedAt: 1_000,
+      now: 60 * 60 * 1_000,
+      policy: {
+        mode: "idle",
+        atHour: 4,
+        idleMinutes: 0,
+      },
+    });
+
+    expect(freshness).toEqual({
+      fresh: true,
+      dailyResetAt: undefined,
+      idleExpiresAt: undefined,
+    });
+  });
 });
 
 describe("session store lock (Promise chain mutex)", () => {
@@ -253,10 +278,10 @@ describe("session store lock (Promise chain mutex)", () => {
         model: "claude-opus-4-6",
       },
       {
-        model: "gpt-5.2",
+        model: "gpt-5.4",
       },
     );
-    expect(merged.model).toBe("gpt-5.2");
+    expect(merged.model).toBe("gpt-5.4");
     expect(merged.modelProvider).toBeUndefined();
   });
 
@@ -279,121 +304,71 @@ describe("session store lock (Promise chain mutex)", () => {
     expect(store[key]?.modelProvider).toBeUndefined();
     expect(store[key]?.model).toBeUndefined();
   });
-});
 
-describe("appendAssistantMessageToSessionTranscript", () => {
-  const fixture = useTempSessionsFixture("transcript-test-");
-  const sessionId = "test-session-id";
-  const sessionKey = "test-session";
+  it("preserves ACP metadata when replacing a session entry wholesale", async () => {
+    const key = "agent:codex:acp:binding:discord:default:feedface";
+    const acp = {
+      backend: "acpx",
+      agent: "codex",
+      runtimeSessionName: "codex-discord",
+      mode: "persistent" as const,
+      state: "idle" as const,
+      lastActivityAt: 100,
+    };
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "sess-acp",
+        updatedAt: 100,
+        acp,
+      },
+    });
 
-  function writeTranscriptStore() {
-    fs.writeFileSync(
-      fixture.storePath(),
-      JSON.stringify({
-        [sessionKey]: {
-          sessionId,
-          chatType: "direct",
-          channel: "discord",
+    await updateSessionStore(storePath, (store) => {
+      store[key] = {
+        sessionId: "sess-acp",
+        updatedAt: 200,
+        modelProvider: "openai-codex",
+        model: "gpt-5.4",
+      };
+    });
+
+    const store = loadSessionStore(storePath);
+    expect(store[key]?.acp).toEqual(acp);
+    expect(store[key]?.modelProvider).toBe("openai-codex");
+    expect(store[key]?.model).toBe("gpt-5.4");
+  });
+
+  it("allows explicit ACP metadata removal through the ACP session helper", async () => {
+    const key = "agent:codex:acp:binding:discord:default:deadbeef";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "sess-acp-clear",
+        updatedAt: 100,
+        acp: {
+          backend: "acpx",
+          agent: "codex",
+          runtimeSessionName: "codex-discord",
+          mode: "persistent",
+          state: "idle",
+          lastActivityAt: 100,
         },
-      }),
-      "utf-8",
-    );
-  }
+      },
+    });
+    const cfg = {
+      session: {
+        store: storePath,
+      },
+    } as OpenClawConfig;
 
-  it("creates transcript file and appends message for valid session", async () => {
-    writeTranscriptStore();
-
-    const result = await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text: "Hello from delivery mirror!",
-      storePath: fixture.storePath(),
+    const result = await upsertAcpSessionMeta({
+      cfg,
+      sessionKey: key,
+      mutate: () => null,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(fs.existsSync(result.sessionFile)).toBe(true);
-      const sessionFileMode = fs.statSync(result.sessionFile).mode & 0o777;
-      if (process.platform !== "win32") {
-        expect(sessionFileMode).toBe(0o600);
-      }
-
-      const lines = fs.readFileSync(result.sessionFile, "utf-8").trim().split("\n");
-      expect(lines.length).toBe(2);
-
-      const header = JSON.parse(lines[0]);
-      expect(header.type).toBe("session");
-      expect(header.id).toBe(sessionId);
-
-      const messageLine = JSON.parse(lines[1]);
-      expect(messageLine.type).toBe("message");
-      expect(messageLine.message.role).toBe("assistant");
-      expect(messageLine.message.content[0].type).toBe("text");
-      expect(messageLine.message.content[0].text).toBe("Hello from delivery mirror!");
-    }
-  });
-
-  it("does not append a duplicate delivery mirror for the same idempotency key", async () => {
-    writeTranscriptStore();
-
-    await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text: "Hello from delivery mirror!",
-      idempotencyKey: "mirror:test-source-message",
-      storePath: fixture.storePath(),
-    });
-    await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text: "Hello from delivery mirror!",
-      idempotencyKey: "mirror:test-source-message",
-      storePath: fixture.storePath(),
-    });
-
-    const sessionFile = resolveSessionTranscriptPathInDir(sessionId, fixture.sessionsDir());
-    const lines = fs.readFileSync(sessionFile, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(2);
-
-    const messageLine = JSON.parse(lines[1]);
-    expect(messageLine.message.idempotencyKey).toBe("mirror:test-source-message");
-    expect(messageLine.message.content[0].text).toBe("Hello from delivery mirror!");
-  });
-
-  it("ignores malformed transcript lines when checking mirror idempotency", async () => {
-    writeTranscriptStore();
-
-    const sessionFile = resolveSessionTranscriptPathInDir(sessionId, fixture.sessionsDir());
-    fs.writeFileSync(
-      sessionFile,
-      [
-        JSON.stringify({
-          type: "session",
-          version: 1,
-          id: sessionId,
-          timestamp: new Date().toISOString(),
-          cwd: process.cwd(),
-        }),
-        "{not-json",
-        JSON.stringify({
-          type: "message",
-          message: {
-            role: "assistant",
-            idempotencyKey: "mirror:test-source-message",
-            content: [{ type: "text", text: "Hello from delivery mirror!" }],
-          },
-        }),
-      ].join("\n") + "\n",
-      "utf-8",
-    );
-
-    const result = await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text: "Hello from delivery mirror!",
-      idempotencyKey: "mirror:test-source-message",
-      storePath: fixture.storePath(),
-    });
-
-    expect(result.ok).toBe(true);
-    const lines = fs.readFileSync(sessionFile, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(3);
+    expect(result?.acp).toBeUndefined();
+    const store = loadSessionStore(storePath);
+    expect(store[key]?.acp).toBeUndefined();
   });
 });
 

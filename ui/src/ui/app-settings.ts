@@ -8,6 +8,7 @@ import {
 } from "./app-polling.ts";
 import { scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
 import type { OpenClawApp } from "./app.ts";
+import { loadAgentFiles } from "./controllers/agent-files.ts";
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
 import { loadAgents } from "./controllers/agents.ts";
@@ -16,6 +17,7 @@ import { loadConfig, loadConfigSchema } from "./controllers/config.ts";
 import { loadCronJobs, loadCronRuns, loadCronStatus } from "./controllers/cron.ts";
 import { loadDebug } from "./controllers/debug.ts";
 import { loadDevices } from "./controllers/devices.ts";
+import { loadDreamingStatus } from "./controllers/dreaming.ts";
 import { loadExecApprovals } from "./controllers/exec-approvals.ts";
 import { loadLogs } from "./controllers/logs.ts";
 import { loadNodes } from "./controllers/nodes.ts";
@@ -58,6 +60,10 @@ type SettingsHost = {
   pendingGatewayUrl?: string | null;
   systemThemeCleanup?: (() => void) | null;
   pendingGatewayToken?: string | null;
+  dreamingStatusLoading: boolean;
+  dreamingStatusError: string | null;
+  dreamingStatus: import("./controllers/dreaming.js").DreamingStatus | null;
+  dreamingModeSaving: boolean;
 };
 
 export function applySettings(host: SettingsHost, next: UiSettings) {
@@ -72,6 +78,7 @@ export function applySettings(host: SettingsHost, next: UiSettings) {
     host.themeMode = next.themeMode;
     applyResolvedTheme(host, resolveTheme(next.theme, next.themeMode));
   }
+  applyBorderRadius(next.borderRadius);
   host.applySessionKey = host.settings.lastActiveSessionKey;
 }
 
@@ -97,7 +104,10 @@ export function applySettingsFromUrl(host: SettingsHost) {
   const gatewayUrlRaw = params.get("gatewayUrl") ?? hashParams.get("gatewayUrl");
   const nextGatewayUrl = gatewayUrlRaw?.trim() ?? "";
   const gatewayUrlChanged = Boolean(nextGatewayUrl && nextGatewayUrl !== host.settings.gatewayUrl);
-  const tokenRaw = hashParams.get("token");
+  // Prefer fragment tokens over query tokens. Fragments avoid server-side request
+  // logs and referrer leakage; query-param tokens remain a one-time legacy fallback
+  // for compatibility with older deep links.
+  const tokenRaw = hashParams.get("token") ?? params.get("token");
   const passwordRaw = params.get("password") ?? hashParams.get("password");
   const sessionRaw = params.get("session") ?? hashParams.get("session");
   const shouldResetSessionForToken = Boolean(
@@ -219,6 +229,9 @@ export async function refreshActiveTab(host: SettingsHost) {
   if (host.tab === "instances") {
     await loadPresence(host as unknown as OpenClawApp);
   }
+  if (host.tab === "usage") {
+    await loadUsage(host as unknown as OpenClawApp);
+  }
   if (host.tab === "sessions") {
     await loadSessions(host as unknown as OpenClawApp);
   }
@@ -239,6 +252,9 @@ export async function refreshActiveTab(host: SettingsHost) {
       host.agentsSelectedId ?? host.agentsList?.defaultId ?? host.agentsList?.agents?.[0]?.id;
     if (agentId) {
       void loadAgentIdentity(host as unknown as OpenClawApp, agentId);
+      if (host.agentsPanel === "files") {
+        void loadAgentFiles(host as unknown as OpenClawApp, agentId);
+      }
       if (host.agentsPanel === "skills") {
         void loadAgentSkills(host as unknown as OpenClawApp, agentId);
       }
@@ -255,6 +271,10 @@ export async function refreshActiveTab(host: SettingsHost) {
     await loadDevices(host as unknown as OpenClawApp);
     await loadConfig(host as unknown as OpenClawApp);
     await loadExecApprovals(host as unknown as OpenClawApp);
+  }
+  if (host.tab === "dreams") {
+    await loadConfig(host as unknown as OpenClawApp);
+    await loadDreamingStatus(host as unknown as OpenClawApp);
   }
   if (host.tab === "chat") {
     await refreshChat(host as unknown as Parameters<typeof refreshChat>[0]);
@@ -300,6 +320,7 @@ export function syncThemeWithSettings(host: SettingsHost) {
   host.theme = host.settings.theme ?? "claw";
   host.themeMode = host.settings.themeMode ?? "system";
   applyResolvedTheme(host, resolveTheme(host.theme, host.themeMode));
+  applyBorderRadius(host.settings.borderRadius ?? 50);
   syncSystemThemeListener(host);
 }
 
@@ -310,6 +331,22 @@ export function attachThemeListener(host: SettingsHost) {
 export function detachThemeListener(host: SettingsHost) {
   host.systemThemeCleanup?.();
   host.systemThemeCleanup = null;
+}
+
+const BASE_RADII = { sm: 6, md: 10, lg: 14, xl: 20, full: 9999, default: 10 };
+
+export function applyBorderRadius(value: number) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const root = document.documentElement;
+  const scale = value / 50;
+  root.style.setProperty("--radius-sm", `${Math.round(BASE_RADII.sm * scale)}px`);
+  root.style.setProperty("--radius-md", `${Math.round(BASE_RADII.md * scale)}px`);
+  root.style.setProperty("--radius-lg", `${Math.round(BASE_RADII.lg * scale)}px`);
+  root.style.setProperty("--radius-xl", `${Math.round(BASE_RADII.xl * scale)}px`);
+  root.style.setProperty("--radius-full", `${Math.round(BASE_RADII.full * scale)}px`);
+  root.style.setProperty("--radius", `${Math.round(BASE_RADII.default * scale)}px`);
 }
 
 export function applyResolvedTheme(host: SettingsHost, resolved: ResolvedTheme) {

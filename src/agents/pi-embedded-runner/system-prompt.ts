@@ -51,7 +51,6 @@ export function buildEmbeddedSystemPrompt(params: {
   userTime?: string;
   userTimeFormat?: ResolvedTimeFormat;
   contextFiles?: EmbeddedContextFile[];
-  bootstrapTruncationWarningLines?: string[];
   memoryCitationsMode?: MemoryCitationsMode;
 }): string {
   return buildAgentSystemPrompt({
@@ -81,7 +80,6 @@ export function buildEmbeddedSystemPrompt(params: {
     userTime: params.userTime,
     userTimeFormat: params.userTimeFormat,
     contextFiles: params.contextFiles,
-    bootstrapTruncationWarningLines: params.bootstrapTruncationWarningLines,
     memoryCitationsMode: params.memoryCitationsMode,
   });
 }
@@ -98,7 +96,7 @@ export function applySystemPromptOverrideToSession(
   override: string | ((defaultPrompt?: string) => string),
 ) {
   const prompt = typeof override === "function" ? override() : override.trim();
-  session.agent.setSystemPrompt(prompt);
+  session.agent.state.systemPrompt = prompt;
   const mutableSession = session as unknown as {
     _baseSystemPrompt?: string;
     _rebuildSystemPrompt?: (toolNames: string[]) => string;

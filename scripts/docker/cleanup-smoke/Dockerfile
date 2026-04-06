@@ -2,6 +2,8 @@
 
 FROM node:24-bookworm-slim@sha256:b4687aef2571c632a1953695ce4d61d6462a7eda471fe6e272eebf0418f276ba
 
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
 RUN --mount=type=cache,id=openclaw-cleanup-smoke-apt-cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,id=openclaw-cleanup-smoke-apt-lists,target=/var/lib/apt,sharing=locked \
   apt-get update \
@@ -12,7 +14,12 @@ RUN --mount=type=cache,id=openclaw-cleanup-smoke-apt-cache,target=/var/cache/apt
     git
 
 WORKDIR /repo
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY packages ./packages
+COPY extensions ./extensions
+COPY patches ./patches
+COPY scripts/postinstall-bundled-plugins.mjs scripts/npm-runner.mjs ./scripts/
 RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
   corepack enable \
   && pnpm install --frozen-lockfile
