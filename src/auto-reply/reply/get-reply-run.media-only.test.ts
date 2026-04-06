@@ -48,6 +48,12 @@ vi.mock("./body.js", () => ({
   applySessionHints: vi.fn().mockImplementation(async ({ baseBody }) => baseBody),
 }));
 
+const resolveAnthropicOauthClaudeCliRoute = vi.hoisted(() => vi.fn());
+
+vi.mock("./anthropic-claude-cli-route.js", () => ({
+  resolveAnthropicOauthClaudeCliRoute,
+}));
+
 vi.mock("./groups.js", () => ({
   buildGroupIntro: vi.fn().mockReturnValue(""),
   buildGroupChatContext: vi.fn().mockReturnValue(""),
@@ -158,6 +164,12 @@ function baseParams(
 
 describe("runPreparedReply media-only handling", () => {
   beforeEach(() => {
+    resolveAnthropicOauthClaudeCliRoute.mockReset();
+    resolveAnthropicOauthClaudeCliRoute.mockImplementation(({ provider, model }) => ({
+      provider,
+      model,
+      routed: false,
+    }));
     vi.clearAllMocks();
   });
 
@@ -206,6 +218,30 @@ describe("runPreparedReply media-only handling", () => {
       text: "I didn't receive any text in your message. Please resend or add a caption.",
     });
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("routes Anthropic OAuth Claude runs through claude-cli before execution", async () => {
+    resolveAnthropicOauthClaudeCliRoute.mockReturnValue({
+      provider: "claude-cli",
+      model: "claude-opus-4-1",
+      routed: true,
+    });
+
+    const result = await runPreparedReply(baseParams());
+    expect(result).toEqual({ text: "ok" });
+
+    const call = vi.mocked(runReplyAgent).mock.calls[0]?.[0];
+    expect(call?.followupRun.run.provider).toBe("claude-cli");
+    expect(call?.followupRun.run.model).toBe("claude-opus-4-1");
+  });
+
+  it("keeps direct Anthropic execution when Claude CLI routing does not apply", async () => {
+    const result = await runPreparedReply(baseParams());
+    expect(result).toEqual({ text: "ok" });
+
+    const call = vi.mocked(runReplyAgent).mock.calls[0]?.[0];
+    expect(call?.followupRun.run.provider).toBe("anthropic");
+    expect(call?.followupRun.run.model).toBe("claude-opus-4-1");
   });
 
   it("omits auth key labels from /new and /reset confirmation messages", async () => {

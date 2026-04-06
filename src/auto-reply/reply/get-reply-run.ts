@@ -36,6 +36,7 @@ import {
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { runReplyAgent } from "./agent-runner.js";
+import { resolveAnthropicOauthClaudeCliRoute } from "./anthropic-claude-cli-route.js";
 import { applySessionHints } from "./body.js";
 import type { buildCommandContext } from "./commands.js";
 import type { InlineDirectives } from "./directive-handling.js";
@@ -475,6 +476,14 @@ export async function runPreparedReply(
     storePath,
     isNewSession,
   });
+  const routedModel = resolveAnthropicOauthClaudeCliRoute({
+    agentDir,
+    provider,
+    model,
+    authProfileId,
+  });
+  const activeProvider = routedModel.provider;
+  const activeModel = routedModel.model;
   const authProfileIdSource = sessionEntry?.authProfileOverrideSource;
   const followupRun = {
     prompt: queuedBody,
@@ -512,15 +521,15 @@ export async function runPreparedReply(
       workspaceDir,
       config: cfg,
       skillsSnapshot,
-      provider,
-      model,
+      provider: activeProvider,
+      model: activeModel,
       authProfileId,
       authProfileIdSource,
       thinkLevel: resolvedThinkLevel,
       fastMode: resolveFastModeState({
         cfg,
-        provider,
-        model,
+        provider: activeProvider,
+        model: activeModel,
         sessionEntry,
       }).enabled,
       verboseLevel: resolvedVerboseLevel,
@@ -537,7 +546,7 @@ export async function runPreparedReply(
       ownerNumbers: command.ownerList.length > 0 ? command.ownerList : undefined,
       inputProvenance: ctx.InputProvenance ?? sessionCtx.InputProvenance,
       extraSystemPrompt: extraSystemPromptParts.join("\n\n") || undefined,
-      ...(isReasoningTagProvider(provider) ? { enforceFinalTag: true } : {}),
+      ...(isReasoningTagProvider(activeProvider) ? { enforceFinalTag: true } : {}),
     },
   };
 
